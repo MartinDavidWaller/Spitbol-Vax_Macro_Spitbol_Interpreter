@@ -1,0 +1,1093 @@
+	.TITLE	SPITIOSYS - VMS I/O INTERFACE FOR MACRO SPITBOL
+;
+;	COPYRIGHT (c) 1981 under BERNE and UNIVERSAL COPYRIGHT
+;	LAW by DEWAR INFORMATION SYSTEMS CORPORATION.
+;
+;	The software described in this document is proprietary
+;	to DEWAR INFORMATION SYSTEMS CORPORATION and furnished
+;	to the purchaser under a license  for use on a  single
+;	computer  system and can be copied (with the inclusion
+;	of DEWAR INFORMATION SYSTEMS  CORPORATIONS's copyright 
+;	notice) only for use in such system.
+;
+;
+;	This software is the property of:
+;
+;	Steven G. Duff
+;	c/o Dewar Information Systems Corp.
+;	221 West Lake Street
+;	Oak Park, Illinois  60302
+;	(312) 524-1644
+;
+	.PAGE
+	.SBTTL	SPITIOSYS - Definitions
+;
+	.LIBRARY "SPITMACS"
+;
+	IDENT	SPITIOSYS,A,3
+;
+	$DEVDEF			;Device Characteristics Bits Def'n
+	$DIBDEF			;Define Dev. Information Blk Offsets
+	$FCBDEF			;Define FCBLK Offsets
+	$RMSDEF			;Get RMS Error Codes
+	$TPADEF			;Define TPARSE Codes
+;
+DEFLEN=2048			;Default Max. Reclen
+;
+	.SBTTL	SPITIOSYS - Revision History
+;
+; V35-A3 12-AUG-1981 [SGD]:
+; o Removed code relating to printing of null string on terminal
+;   device.  RMS used to ignore this - it doesn't anymore.
+;
+; V35-A2 10-JUN-1981 [SGD]:
+; o Added /CIF (Create-If) file option switch.
+;
+; V35-A1 18-FEB-1981 [SGD]:
+; o Changed I/O so that CREATE not issued if /EOF specified.
+; o Fixed SYSRD to permit truncation on source cards without
+;   reporting an error.  Previously, a card longer than the
+;   -INxx length would cause a truncation error inside SYSIN,
+;   which SYSRD and subsequently SPITBOL took to be an end-of
+;   file.
+; o (06-MAY-1981) Added warning message on truncation of compiled input
+;
+; V35-001 ??-???-80 [SGD]:
+; o Fixed SYSFC to allow /NO... switch forms in addition to /-...
+;
+; V35-003 17-SEP-80 [SGD]:
+; o Fixed fix (A) to check DEV$M_DIR in FAB of FCB to omit
+;   the $SEARCH (in SYSIO).
+;
+; V35-002 01-JUL-80 [SGD]:
+; o Fixed so that non-file structured devices do not pass through
+;   RMS $SEARCH service (in SYSIO).
+;
+; V35-002 02-JUL-80 [SGD]:
+; o Fixed to open FCB_TERMO (SYS$OUTPUT) in SYSPI
+;
+	.PAGE
+	.SBTTL	SPITIOSYS - Preamble
+;
+;	This package is a condensation of all of the individual MACRO
+;	SPITBOL System routines relating to I/O.  It includes...
+;
+;	SYSEF	- EJECT() function
+;	SYSEJ	- End-of-Run Processing
+;	SYSEN	- ENDFILE() function
+;	SYSEP	- Eject for Standard Printer
+;	SYSFC	- Filearg Check for INPUT() and OUTPUT() calls
+;	SYSIL	- Length of Next Input Record
+;	SYSIN	- Read Input Record from INPUT() file
+;	SYSIO	- Process INPUT() and OUTPUT() calls (after SYSFC)
+;	SYSOPEN	- Auxiliary routine to open file given FCBLK
+;	SYSOU	- Write Record to OUTPUT() Associated File
+;	SYSPI	- Print Record on TERMINAL
+;	SYSPR	- Print Record on Standard Printer
+;	SYSRD	- Read Record from Standard Input Channel
+;	SYSRI	- Read Record from TERMINAL
+;	SYSRW	- REWIND() Function
+	.PAGE
+	.SBTTL	SPITIOSYS - FCBLK Structure
+;
+;	Most of these routines revolve around the FCBLK structure. The
+;	"FCBLK" in the VAX/VMS version is an aggregate of all the
+;	necessary RMS structures for file I/O.  It is allocated for every
+;	distinct "Filearg1" (that is, each time SYSFC is entered with no
+;	FCBLK pointer and "Filearg1" is non-null).  The control block
+;	offsets are defined using the macro $FCBDEF. A "standard" FCBLK
+;	is allocated with the $FCB macro.  A problem arises because
+;	non-relocatable addresses are contained in RMS control blocks. 
+;	As the FCBLKs are allocated in SPITBOL dynamic, they are subject
+;	to frequent moves to different locations by the garbage
+;	collector.  A macro $FCBSET ADDR=fcbaddress must therefore be
+;	applied each time an FCBLK comes in from SPITBOL and is to be
+;	given to RMS. This macro sets the internal pointers among the
+;	various control structures given the present location of the FCBLK.
+;	The general structure of an FCBLK defined by these macros is:
+;
+;		<------------L O N G W O R D------------>
+;
+;		*---------------------------------------*
+;		|	FCBLK ID (Used By SPITBOL)	|	FCB$L_BID=0
+;		*---------------------------------------*
+;		|	FCBLK Length = FCB$K_BLN	|	FCB$L_BLN
+;		*---------------------------------------*
+;		| Resvd(FCB$W_BTS)  | Given Rec. Lngth  |       FCB$W_RSZ
+;		*---------------------------------------*
+;		|					|	FCB$_FAB
+;		|	RMS File Access Block		|
+;		|	Length is FAB$K_BLN		|
+;		|					|
+;		*---------------------------------------*
+;		|					|	FCB$_RAB
+;		|	RMS Record Access Block		|
+;		|	Length is RAB$K_BLN		|
+;		|					|
+;		*---------------------------------------*
+;		|					|	FCB$_XFH
+;		|	RMS File Hdr. XAB		|
+;		|	Length is XAB$K_FHCLEN		|
+;		|					|
+;		*---------------------------------------*
+;		|					|	FCB$_NAM
+;		|	RMS NAM Block			|
+;		|	Length is NAM$K_BLN		|
+;		|					|
+;		*---------------------------------------*
+;		|					|	FCB$_FNM
+;		|	String buffer for Filearg1	|
+;		|	Length is NAM$C_MAXRSS		|
+;		|					|
+;		*---------------------------------------*
+;		|					|	FCB$_RSA
+;		|	String from NAM Block RSA	|
+;		|	Length is NAM$C_MAXRSS		|
+;		|					|
+;		*---------------------------------------*
+;
+;		The length of this whole structure is FCB$K_BLN bytes
+;		The FCBLK definitions are retrieved with the $FCBDEF macro.
+	.PAGE
+	.SBTTL	SYSEJ: Eject Page - Constant Store
+	CONSSECT
+;
+;	Quasi-SCBLK Passed To SYSOU To Cause Page Eject on Device/File
+;
+SYSEJ_SCBLK:	.LONG	B$SCL		;Type Word
+		.LONG	1		;Length Word
+		.BYTE	12		;Form Feed Character
+		.ALIGN	LONG,0		;Pad Out With Nulls
+		.PAGE
+		.SBTTL	SYSEJ: Mainline Code
+;
+;	This module is entered by SPITBOL, and by SYSEP in order to
+;	cause an 'eject' on the file associated with the given FCBLK
+;
+;	Calling Sequence:
+;
+;		(WA/R6) - 	FCBLK Pointer
+;		JSB	SYSEF
+;		.LONG	File Does Not Exist Return Thread
+;		.LONG	Inappropriate File Return Error Thread
+;		.LONG	I/O Error Return Thread
+;
+SYSEF::
+	MOVL	R9,-(SP)		;Save XR As We Need It For SYSOU Call
+	JSB	SYSOPEN			;Insure File Accessable
+	BLBC	R0,9999$		;File Does Not Exist Error If No-Go
+	MOVAL	SYSEJ_SCBLK,R9		;Else OK.  Point To Fake SCBLK
+	JSB	SYSOU			;Pretend We All's SPITBOL Doin' Write
+	.LONG	9997$			;Any Kind Of Error Is
+	.LONG	9997$			;...I/O Error
+	MOVL	(SP)+,R9		;Else A-OK.  Pop XR To Get Ready Exit
+	ADDL3	#12,(SP)+,R11		;Bias Past Error Returns
+	JMP	(R11)			;Back To Continue Code in SPITBOL
+;
+;	Error Returns Follow.  Note That R9 Is Still On the Stack.
+;
+;	Here For I/O Error Return
+;
+9997$:	ADDL2	#4,4(SP)		;Bias To Next Return Thread
+;
+;	Here For Inappopriate File Return Error Thread
+;
+9998$:	ADDL2	#4,4(SP)		;Bias To Next Return Thread
+;
+;	Here For File Does Not Exist
+;
+9999$:	MOVL	(SP)+,R9		;Unstack Saved R9
+	MOVL	(SP)+,R11		;Get Return Thread Pointer
+	JMP	@(R11)+			;Jump Through It
+	.PAGE
+	.SBTTL	SYSEN: ENDFILE() Function - Mainline Code
+	PROGSECT
+;
+;	This module is called from SPITBOL in order to perform the
+;	I/O operation associated with the ENDFILE() function call.
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	FCBLK Pointer (See SYSFC for details)
+;		(XR/R9) - 	ENDFILE(arg) SCBLK argument pointer
+;		JSR	SYSEN
+;		.LONG	File Does Not Exist Error
+;		.LONG	ENDFILE Not Allowed
+;		.LONG	I/O Error
+;
+SYSEN::
+	JSB	SYSOPEN		;Open The File If Not Already Open
+	BLBC	R0,9999$	;Open Error Means File Does Not Exist
+	$CLOSE	FAB=FCB$_FAB(R6)  ;Attempt to Close The File And Disconnect RAB
+	BLBC	R0,9997$	;Any Error Is I/O Error
+	ADDL3	#12,(SP)+,R11	;Else OK - Point Past Error Return Vectors
+	JMP	(R11)		;And Jump Back
+;
+;	Here For I/O Error Return
+;
+9997$:	ADDL2	#4,(SP)		;Bias To Next Error Return Vector
+;
+;	Here For ENDFILE Not Allowed
+;
+9998$:	ADDL2	#4,(SP)		;Bias To Next Error Return Vector
+;
+;	Here For No Such File Error
+;
+9999$:	MOVL	(SP)+,R11	;Get Error Vector Pointer From Stack
+	JMP	@(R11)+		;Jump Through It
+	.PAGE
+	.SBTTL	SYSEP: Eject Page on Standard Printer - Mainline Code
+	PROGSECT
+;
+;	This module is called by SPITBOL to cause a page eject on
+;	SYSOUT.
+;
+;		JSB	SYSEP
+;
+SYSEP::
+	PUSHR	#^M<R6>			;Save WA, As We Need It For FCBLK Ptr
+	MOVAL	FCB_SYSOUT,R6		;Point To FCBLK for SYSOUT
+	JSB	SYSEF			;Masquerade as SPITBOL To General EJECT
+	.LONG	100$			;No Error Exit
+	.LONG	100$			;...So Just Press On
+	.LONG	100$			;...If Something Wicked Occurs
+100$:	POPR	#^M<R6>			;Put Back WA The Way It Was
+	RSB				;Back To SPITBOL
+	.PAGE
+	.SBTTL	SYSFC: Check INPUT() and OUTPUT() args. - Preamble
+;
+;	This module is called initially when a SPITBOL call to INPUT() or
+;	OUTPUT() is encountered.  The purpose is to  check the arguments
+;	and request that SPITBOL provide an FCBLK to SYSIO if necessary.
+;	The call to INPUT or OUTPUT has the form:
+;
+;		XXXPUT(.spitbol-name, Filearg1, Filearg2)
+;
+;	"Filearg1" is an arbitrary name string that can be used inside
+;	SPITBOL to later refer to this file/FCBLK binding.  Other
+;	than that, it has no significance to the OSINT I/O system.
+;	Note that a null Filearg1 designates the SYSIN/SYSOUT standard
+;	files (FCBs).  These FCBLKs can be reassigned and associated as
+;	with any others, except the actual RMS-FCBLK structures are found
+;	(statically) in the SPITGO module, and are not maintained by
+;	SPITBOL in dynamic.
+;
+;	"Filearg2" is the RMS logical-phycical device/file specification
+;	to be assigned.  It can optionally be suffixed with switches
+;	(see SYSFC_OPTIONS) separated with slashes ("/").  If the filespec
+;	itself is given, this will cause the present association (if any)
+;	to be closed out, and the new one made.  If it is null, then there
+;	MUST be a current association, and it will be retained, although
+;	any switches that are specified may modify this association.
+;
+	.PAGE
+	.SBTTL	SYSFC: DEFINITIONS AND DATA AREA
+	WORKSECT
+;
+;	There are two principal FCBLK areas used in construction of
+;	a new FCBLK.  FCB_MASTR is the basic FCBLK.  When a new FCBLK
+;	is to be constructed, FCB_MASTR is copied into FCB_SLAVE.  Any
+;	subsequent twiddling by SYSFC or SYSIO is done on this
+;	incarnation.  The SLAVE block is then copied into the FCBLK
+;	frame to be used.
+;
+FCB_MASTR::	$FCB		;Master FCBLK Image
+FCB_SLAVE::	$FCB		;Slave FCBLK Image
+;
+;	This longword is used to contain an FCBLK 'address' that is
+;	communicated to the SYSIO module (called just after SYSFC).
+;	There are several cases representing different values that
+;	SYSFC_FBPTR can have upon exit from SYSFC; they are:
+;
+;	1. SYSFC_FBPTR = 0:
+;	   This means that no 'new' FCBLK is to be associated.  This
+;	   occurs when the filespec is given as null.
+;	2. SYSFC_FBPTR = FCB_SLAVE:
+;	   This signifies to SYSIO that while a new association is to
+;	   be formed, there was no prior association.  The FCB_SLAVE
+;	   will be copied into the 'new' FCBLK frame by SYSIO, but no
+;	   $CLOSE will be issued on the old one.
+;	3. SYSFC_FBPTR = FCB_SYSIN, FCB_SYSOUT or Pointer into SPITBOL Dynamic:
+;	   This means that there was an old association, and it is being
+;	   changed.  Although in all cases, SYSFC_FBPTR points to a vaild
+;	   FCBLK on exit from SYSFC, in the case of a pointer to an FCBLK in
+;	   dynamic, the FCBLK may have moved by the time SYSIO is called.
+;	   This creates no problems, as the old FCBLK is reused, and its
+;	   address is thus passed to SYSIO in WA.
+;
+SYSFC_FBPTR::	.LONG	0		;Pointer to 'Old' FCBLK
+;
+;	This longword should be set to FCB$K_BLN, the length of an FCBLK,
+;	on final exit from SYSFC in order to request a new FCBLK frame from
+;	SPITBOL.  This will happen only when no prior association exists; in
+;	all other cases it will be zero.
+;
+SYSFC_FBLEN::	.LONG	0		;FCBLK Request Length
+	.PAGE
+	.SBTTL	SYSFC: Mainline Code
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(XL/R10) -	Filearg1 SCBLK Pointer.
+;		(XR/R9) -	Filearg2 SCBLK Pointer.
+;		-(XS/SP)...-(XS/SP)  stacked Filearg2 fragments (these
+;				are the individual components that were
+;				separated by commas. Order is rightmost on top)
+;		(WC/R8) -	Number of stacked components
+;		(WA/R6) -	=0 for INPUT() or =3 for OUTPUT()
+;		(WA/R6) -	Existing FCBLK Pointer or zero if none.
+;		JSB	SYSFC
+;		.LONG addr	Invalid filespec return
+;		(XS) -		Popped (WC) Times
+;		(WA/R6) -	# Bytes in requested FCBLK or zero
+;		(WC/R8) -	=1 for XNBLK-type FCBLK
+;		(XL/R10) -	=0 (No Private FCBLK Wanted)
+;
+;
+;	Entry Point.  First See If Filearg1 is null.  If so, then this
+;	request is directed at SYSIN/SYSOUT.  We therefore point WA/R6 at
+;	their "pseudo-FCBLKs" and merge into normal processing.
+;
+SYSFC::
+	CLRL	SYSFC_FBLEN	;Zero Request Length
+	CLRL	SYSFC_FBPTR	;Assume No New FCBLK
+	TSTL	4(R10)		;Check Length of Filearg1
+	BNEQ	100$		;If non-null Then not standard I/O - Branch
+	MOVAL	FCB_SYSIN,R6	;Else Assume SYSIN FCBLK
+	BLBC	R7,100$		;Merge If Correct
+	MOVAL	FCB_SYSOUT,R6	;Otherwise must be SYSOUT Association
+;
+;	Merge when WA Either Points to an FCBLK, or =0 If None Exists.
+;	Now Check For a Null Filespec.
+;
+100$:	TSTL	R8		;Check for No SCBLKs Stacked
+	BEQL	200$		;Null If That Is So.  Branch.
+	MOVL	(SP)[R8],R11	;Else Point to Filespec SCBLK that is Stacked
+	TSTL	4(R11)		;Check For Null
+	BNEQ	300$		;Branch to Continue On If Not.
+;
+;	Merge Here If the Filespec Is Null.  Make Certain That There Is
+;	A Pre-Existing Association (FCBLK).
+;
+200$:	TSTL	R6		;Check For FCBLK
+	BNEQ	400$		;Continue On If So
+	BRW	9999$		;Else Error Out Of This Place.
+;
+;	Here For Non-Null Filespec.  This Implies Construction of a New FCBLK,
+;	Which is Done in the SLAVE Area.  Note that R11 Contains a Pointer to
+;	the Filespec SCBLK.
+;
+300$:	PUSHR	#^M<R2,R3,R4,R5>  ;Save Registers Across MOVs
+	MOVC3	#FCB$K_BLN,-	;Copy Master FCBLK to SLAVE
+		FCB_MASTR,FCB_SLAVE
+	MOVL	R6,SYSFC_FBPTR	;Assume FCBLK Exists & We Will Reuse It
+	TSTL	R6		;Is there, in fact, an FCBLK?
+	BNEQ	350$		;Branch If Assumption Correct.
+	MOVL	#FCB$K_BLN,SYSFC_FBLEN  ;Else Set Request Length
+	MOVAL	FCB_SLAVE,SYSFC_FBPTR   ;...And Set 'Old' Pointer to SLAVE
+;
+;	Merge Here When FBLEN & FBPTR Correctly Set For Non-Null Filespec
+;
+350$:	MOVC5	4(R11),8(R11),-	;Move In Filename String to FCBLK
+		#0,#NAM$C_MAXRSS,FCB_SLAVE+FCB$_FNM
+	POPR	#^M<R2,R3,R4,R5>  ;Restore Saved Registers
+	TSTL	R0		;Check For Unmoved Characters
+	BEQL	375$		;Branch To Continue If OK
+	BRW	9999$		;Else Exit Out - Name String Way Too Big
+;
+;	Here When Filename Moved In.  Now Set Name Length In FCBLK, and
+;	Point WA at SLAVE Block as FCBLK To Be Worked On.
+;
+375$:	MOVB	4(R11),-	;Set Filename String Length Byte in FCB
+		FCB_SLAVE+FCB$_FAB+FAB$B_FNS
+	MOVAL	FCB_SLAVE,R6	;Forget About Old FCBLK, Work On New One.
+;
+;	Merge Here When R6 Points To The 'New' FCBLK (= SLAVE Block If
+;	New FCBLK To Be Allocated).  Set Default INPUT/OUTPUT File Access
+;	Options in FCBLK Depending on Whether INPUT() or OUTPUT() Call.
+;
+400$:	MOVAL	FCB$_FAB(R6),R11  ;Load Ptr. To File Access Opt. Byte
+	BLBS	R7,500$		;Branch If OUTPUT Association
+	BISB2	#FAB$M_GET,FAB$B_FAC(R11)  ;Merge In "GET" Access
+	BRB	600$		;Continue
+;
+;	Here To Set Default File Access For OUTPUT() Call.
+;
+500$:	BISB2	#FAB$M_PUT,FAB$B_FAC(R11)  ;Merge In "PUT" Access
+;
+;	Merge Here When WA/R6 Points To 'New' FCBLK Image, and FBLEN
+;	and FBPRT are all set.  Now process any Filearg2 Switches and
+;	then Exit.
+;
+600$:	JSB	SYSFC_OPTIONS		;Parse Options
+	BLBC	R0,9999$		;Error If Parse Error
+	CLRL	R10			;Never a Private FCBLK
+	MOVL	SYSFC_FBLEN,R6		;Set Request Length For SPITBOL
+	ADDL3	#4,(SP)+,R11		;Point Past Error Thread
+	MOVAL	(SP)[R8],SP		;Unstack Filearg2 Fragments
+	MOVL	#1,R8			;Set Request for XNBLK With WC=1
+	JMP	(R11)			;Exit Cleanly
+;
+;	Here To Exit Messily (Error of any Type)
+;
+9999$:	MOVL	(SP)+,R11		;Get Return Thread Pointer
+	MOVAL	(SP)[R8],SP		;Unstack Fragments
+	JMP	@(R11)+			;Pass Control Back Through Error Thread
+	.PAGE
+	.SBTTL	SYSFC: SYSFC_OPTIONS - Parse FILEARG2 Options - Preamble
+;
+;	This subroutine parses any switches that may be suffixed onto
+;	the filespec in Filearg2.  Note that switches can be suffixed onto
+;	a null filespec, in which case the switches affect the current
+;	FCBLK without any reassociation taking place.  (Changing some
+;	switches after the file has been opened for I/O may be pointless,
+;	or cause an error exit from this module, however, note that the
+;	file is not actually opened until it is referenced in an I/O-implicit
+;	way in SPITBOL.)
+;
+;	The Presently Defined Switches Are:
+;
+;	SWITCH	  FCBLK			DESCR
+;		COMPONENT	
+;
+;	CIF	FAB/FOP		USE EXISTING VERSION ON CREATE IF CAN
+;	CCO	RAB		CANCEL TERMINAL CONTROL O
+;	CR	FAB/RAT		CR/LF ATTRIBUTES ON CREATE
+;	DLT	FAB/FOP		DELETE FILE ON CLOSE
+;	EOF	RAB/ROP		POSITION TO END-OF-FILE ON OPEN
+;	FTN	FAB/RAT		FORTRAN CAR.CTL. ATTRIB. ON CREATE
+;	MXV	FAB/FOP		MAXIMIZE VERION # ON CREATE
+;	PTA	RAB/ROP		PURGE TYPE-AHEAD ON INPUT FROM TT:
+;	RNE	RAB/ROP		READ WITH NO ECHO FROM TERMINAL
+;	RNF	RAB/ROP		READ NO FILTER (CTL U,C, RUBOUT)
+;	SCF	FAB/FOP		SUBMIT AS COMMAND FILE ON CLOSE
+;	SPL	FAB/FOP		SPOOL ON CLOSE
+;	SUP	FAB/FOP		SUPERCEDE OLD VERSION ON CREATE
+;	TEF	FAB/FOP		TRUNCATE TO EOF ON CLOSE
+;
+;	Note that to complement a switch (turn it off). the switch is
+;	specified as "/NOswitch".
+	.PAGE
+	.SBTTL	SYSFC: SYSFC_OPTIONS - TPARSE State Table
+;
+	.SAVE_PSECT
+	$INIT_STATE	FCOPT_TPSTA,FCOPT_TPKEY
+;
+;	Initial State - Skip Over Filename And Exit
+;
+	$STATE	FCOTS_START
+	$TRAN	TPA$_EOS,TPA$_EXIT
+	$TRAN	'/'
+	$TRAN	TPA$_ANY,FCOTS_START
+;
+;	Keyword Slash Encountered.  Look For Complementing Hyphen or "NO"
+;
+	$STATE	FCOTS_KEYWD
+	$TRAN	'-',,FCOTA_KYBIT,,,0		;Version 1 compatibility
+	$TRAN	!FCOTA_CMPNO,,FCOTA_KYBIT,,,0
+	$TRAN	TPA$_LAMBDA,,FCOTA_KYBIT,,,1
+;
+;	Now Find Keyword Proper
+;
+	$STATE
+	$TRAN	'CCO',,FCOTA_ROPBT,,,RAB$V_CCO
+	$TRAN	'EOF',,FCOTA_ROPBT,,,RAB$V_EOF
+	$TRAN	'PTA',,FCOTA_ROPBT,,,RAB$V_PTA
+	$TRAN	'RNE',,FCOTA_ROPBT,,,RAB$V_RNE
+	$TRAN	'RNF',,FCOTA_ROPBT,,,RAB$V_RNF
+;
+	$TRAN	'CR' ,,FCOTA_RATBT,,,FAB$V_CR
+	$TRAN	'FTN',,FCOTA_RATBT,,,FAB$V_FTN
+;
+	$TRAN	'CIF',,FCOTA_FOPBT,,,FAB$V_CIF
+	$TRAN	'DLT',,FCOTA_FOPBT,,,FAB$V_DLT
+	$TRAN	'MXV',,FCOTA_FOPBT,,,FAB$V_MXV
+	$TRAN	'SCF',,FCOTA_FOPBT,,,FAB$V_SCF
+	$TRAN	'SPL',,FCOTA_FOPBT,,,FAB$V_SPL
+	$TRAN	'SUP',,FCOTA_FOPBT,,,FAB$V_SUP
+	$TRAN	'TEF',,FCOTA_FOPBT,,,FAB$V_TEF
+;
+;	Loop Here Until No More Keywords
+;
+	$STATE
+	$TRAN	TPA$_EOS,TPA$_EXIT
+	$TRAN	'/',FCOTS_KEYWD
+;
+	$STATE	FCOTA_CMPNO
+	$TRAN	'N'
+;
+	$STATE
+	$TRAN	'O',TPA$_EXIT
+;
+	$END_STATE
+	.RESTORE_PSECT
+	.PAGE
+	.SBTTL	SYSFC: SYSFC_OPTIONS - Working Store
+	WORKSECT
+;
+;	This is the TPARSE Control Block.
+;
+FCOPT_TPBLK::	.LONG	TPA$K_COUNT0	;Longwords in TPARSE Block
+		.BLKB	TPA$K_LENGTH0-4	;Define Rest Of Block
+;
+;	The Low Bit Of This Longword Is Set Or Cleared By The Keyword
+;	State To Indicate Whether or Not A Complementing "-" was Given
+;	On The Keyword Spec After the Slash.
+;
+FCOPT_COMPL::	.LONG	0		;Keyword Complement Bit
+;
+;	This Longword Holds The Pointer To The FCBLK Being Modified
+;	During The TPARSE
+;
+FCOPT_FBSAV::	.LONG	0		;FCBLK Ptr. Save Area
+	.PAGE
+	.SBTTL	SYSFC: SYSFC_OPTIONS - Mainline Code
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	Pointer To FCBLK Image To Be Twiddled
+;		(XR/R9) -	Filearg2 SCBLK Pointer
+;		JSB	SYSFC_OPTIONS
+;		(R0) -		TPARSE Status Code (Low Bit Clear = Error)
+;
+SYSFC_OPTIONS::				;Entry Point
+	MOVL	R6,FCOPT_FBSAV		;Save FCBLK Pointer For Action Rtns
+	MOVL	4(R9),FCOPT_TPBLK+TPA$L_STRINGCNT  ;Set String Length
+	MOVAL	8(R9),FCOPT_TPBLK+TPA$L_STRINGPTR  ;Set String Addr.
+	PUSHAL	FCOPT_TPKEY		;Point To Keyword Table
+	PUSHAL	FCOPT_TPSTA		;Point To State Table
+	PUSHAL	FCOPT_TPBLK		;Point To Parameter Block
+	CALLS	#3,@#LIB$TPARSE		;Call Upon TPARSE's Services
+	RSB				;Return With Status in R0
+	.PAGE
+	.SBTTL	SYSFC: SYSFC_OPTIONS - TPARSE Action Routines
+;
+;	This Action Routine Moves The Specified Parameter (0 or 1) To
+;	FCOPT_COMPL To Indicate The Presence/Absence Of A Complementing
+;	NO On A Switch.
+;
+FCOTA_KYBIT::	.WORD	0		;Entry Point
+		MOVL	TPA$L_PARAM(AP),FCOPT_COMPL
+		RET			;Back To TPARSE
+;
+;	These xxxBT Routines Set or Clear Bits in Various Fields of the
+;	FCBLK.  The Address of the FCBLK is in FCOPT_FBSAV.  The Bit
+;	Value is in the Low Bit of FCOPT_COMPL, and the Bit Offset is
+;	in the TPARSE Parameter Passed in the TPARSE Action Routine Arg. List
+;
+;
+;	Set/Clear A Bit Inside The FOP Field Of the FAB of the FCBLK.
+;
+FCOTA_FOPBT::	.WORD	0		;Entry Point
+		ADDL3	FCOPT_FBSAV,#FCB$_FAB+FAB$L_FOP,R11  ;Get Field Ptr
+		INSV	FCOPT_COMPL,TPA$L_PARAM(AP),#1,(R11) ;Set/Clr Bit
+		RET
+;
+;	Set/Clear A Bit Inside The RAT Field Of the FAB of the FCBLK.
+;
+FCOTA_RATBT::	.WORD	0		;Entry Point
+		ADDL3	FCOPT_FBSAV,#FCB$_FAB+FAB$B_RAT,R11  ;Get Field Ptr
+		INSV	FCOPT_COMPL,TPA$L_PARAM(AP),#1,(R11) ;Set/Clr Bit
+		RET
+;
+;	Set/Clear A Bit Inside The ROP Field Of the RAB Of the FCBLK.
+;
+FCOTA_ROPBT::	.WORD	0		;Entry Point
+		ADDL3	FCOPT_FBSAV,#FCB$_RAB+RAB$L_ROP,R11  ;Get Field Ptr
+		INSV	FCOPT_COMPL,TPA$L_PARAM(AP),#1,(R11) ;Set/Clr Bit
+		RET
+	.PAGE
+	.SBTTL	SYSIL: Get Length of Next INPUT Record - Mainline Code
+	PROGSECT
+;
+;	This module is called by SPITBOL in response to an access to a
+;	(non-standard) file associated variable.  Its purpose is to
+;	provide the length for the next input record in order that
+;	SPITBOL can allocate the necessary SCBLK frame before calling
+;	SYSIN.
+;
+;	SYSIL accomplishes this by first OPENing and CONNECTing the
+;	RMS structures if necessary, and then inspecting the various
+;	RMS fields in order to get a record length.  If no non-zero
+;	value for record length can be obtained in this way, a default
+;	value is used.
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	SCBLK Pointer
+;		JSB	SYSIL
+;		(WA/R6) -	Max. Length Of Next Input Record
+;
+SYSIL::
+	JSB	SYSOPEN			;Open The File If Necessary
+	MOVZWL	FCB$W_RSZ(R6),R11	;Try FCBLK Explicit Spec. First
+	BNEQU	200$			;OK If Not Zero
+	MOVZWL	FCB$_XFH+XAB$W_LRL(R6),R11  ;Try Longest Record Length in XAB
+	BNEQU	200$			;OK If Not Zero
+	MOVZWL	FCB$_XFH+XAB$W_MRZ(R6),R11  ;Else Try Max. Rec. Length in XAB
+	BNEQU	200$			;OK If Not Zero
+	MOVZWL	FCB$_RAB+RAB$W_USZ(R6),R11  ;Else Try UBF Size in RAB
+	BNEQU	200$			;OK If Not Zero
+	MOVL	#DEFLEN,R11		;Else Make A Beeg Guess
+;
+;	Merge Here With Length in R11
+;
+200$:	MOVL	R11,R6			;Copy to WA for SPITBOL
+	RSB				;Back To Call SYSIN
+	.PAGE
+	.SBTTL	SYSIN: Read A Record From Non-Standard File - Mainline Code
+;
+;	The SYSIN Module is called from SPITBOL in response to an access
+;	to a non-standard file associated variable.  (SYSIL is called first
+;	in order to determine how large an SCBLK should be allocated for
+;	the record).  Note that the file should already have been opened
+;	if necessary by SYSIL.
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	FCBLK Pointer
+;		(XR/R9) -	SCBLK Pointer (Modify Length Before Returning)
+;		JSR	SYSIN
+;		.LONG	Endfile
+;		.LONG	Input Error
+;		.LONG	Record Format Error
+;
+SYSIN::
+	$FCBSET	(R6)			;Fix up Intra-FCBLK Pointers
+	$RAB_STORE  RAB=FCB$_RAB(R6),-	;Set Buffer Descr. in RAB to SCBLK
+		UBF=8(R9),USZ=4(R9)
+	$GET	RAB=FCB$_RAB(R6)	;Issue the read for the next record
+	MOVZWL	FCB$_RAB+RAB$W_RSZ(R6),-  ;Move In Actual Length Of Rec.
+		4(R9)
+	CMPL	R0,#RMS$_EOF		;Check for Endfile
+	BEQLU	9999$			;Branch If It Is.
+	CMPL	R0,#RMS$_RTB		;Check for Truncation
+	BEQLU	9997$			;Format Error If It Is.
+	BLBC	R0,9998$		;Any Other Error Is Input Error
+	ADDL3	#12,(SP)+,R11		;Point Past Alternate Returns
+	JMP	(R11)			;Back To Spitbol
+	.PAGE
+;
+;	Here For Record Format Error
+;
+9997$:	ADDL2	#4,(SP)			;Point to Next Alternate Return
+;
+;	Here For I/O Error
+;
+9998$:	ADDL2	#4,(SP)			;Point to Next Alternate Return
+;
+;	Here For Endfile Return
+;
+9999$:	MOVL	(SP)+,R11		;Get Return Address Pointer From Stack
+	JMP	@(R11)+			;Jump Through
+	.PAGE
+	.SBTTL	SYSIO: Process INPUT(), OUTPUT() Calls - Working Store
+	WORKSECT
+;
+;	Common Expanded String Area For $PARSE, $SEARCH Operations
+;
+SYSIO_ESBUF:	.BLKB	NAM$C_MAXRSS
+	.PAGE
+	.SBTTL	SYSIO: Mainline Code
+	PROGSECT
+;
+;	This module is called immediately after SPITBOL calls SYSFC
+;	in order to process the INPUT(...) or OUTPUT(...) call.  All
+;	non-standard I/O is handled through a structrue termed the
+;	FCBLK, which is described in the preamble for SYSFC.  The
+;	major purpose of this routine is to fill in a new FCBLK frame
+;	if one was allocated as a result of the SYSFC call.  An
+;	RMS $PARSE (and $SEARCH if INPUT(...)) is also performed on
+;	these new FCBLKs in order to check file availability and to
+;	set the NAM block.
+;
+;	Calling Sequence:
+;
+;		SYSFC_FBPTR	Pointer to 'Old' FCBLK (See SYSFC)
+;		(XL/R10) -	Pointer To Filearg1 SCBLK
+;		(XR/R9) -	Pointer To Filearg2 SCBLK
+;		(WA/R6) -	FCBLK Pointer
+;		(WB/R7) - 	=0 for INPUT call, =3 for OUTPUT call
+;		JSB	SYSIO
+;		.LONG	File Does Not Exist
+;		.LONG	Input/Output Not Allowed
+;		(XL/R10) -	FCBLK Pointer
+;		(WC/R8) -	Zero for Default Record Length
+;		(WA,WB) -	Destructable
+;
+SYSIO::
+	TSTL	SYSFC_FBPTR		;If Zero, Then No New FCB - Exit.
+	BNEQ	50$			;Branch If Not Zero To Carry On.
+	BRW	400$			;Else Zero - Branch To Exit
+;
+;	Here When A New FCBLK Is Being Created.
+;
+50$:	TSTL	4(R10)			;Check For Null Filearg1
+	BNEQ	100$			;Branch If Not Standard I/O
+	MOVL	SYSFC_FBPTR,R6		;For Stand.I/O, 'Old' FCB Is SYSIN/OUT
+;
+;	Merge Here When WA/R6 Points To A Valid 'New' FCBLK Frame
+;
+100$:	CMPL	SYSFC_FBPTR,#FCB_SLAVE  ;See If 'Old' FCBLK Is Slave (no old)
+	BEQL	200$			;Skip Close If No 'Old' FCBLK
+	$FCBSET	(R6)			;Fix Up Intra-FCB Pointers
+	$CLOSE	FAB=FCB$_FAB(R6)	;Close, But Don't Check For Errors
+;
+;	Merge When FCBLK Pointed To by WA/R6 is Free and Clear
+;
+200$:	PUSHR	#^M<R2,R3,R4,R5>	;Save Registers Across MOV
+	MOVC3	#FCB$K_BLN-8,FCB_SLAVE+8,- ;Move In, But Dont Disturb SBL Stuff.
+		8(R6)
+	POPR	#^M<R2,R3,R4,R5>	;Restore Registers
+	$FCBSET	(R6)			;Fix Inter-FCB Pointers
+	$NAM_STORE  NAM=FCB$_NAM(R6),-  ;Set ESA As Common Area
+		ESA=SYSIO_ESBUF,ESS=#NAM$C_MAXRSS
+	$PARSE	FAB=FCB$_FAB(R6)	;Fill in NAM Block
+	BLBC	R0,9998$		;Bad Parse; Exit With I/O Not Allwd Err
+	BBS	#NAM$V_WILDCARD,-	;Wildcard in Filespec - Come On Now.
+		FCB$_NAM+NAM$L_FNB(R6),9999$
+	BLBS	R7,300$			;Skip Search if Output Call 
+	BBC	#DEV$V_DIR,-		;Skip Search if no Directory
+		FCB$_FAB+FAB$L_DEV(R6),300$
+	CLRB	FCB$_NAM+NAM$B_RSL(R6)	;Zap Any Existing RSA Link
+	$SEARCH	FAB=FCB$_FAB(R6)	;Else Input Call - Find File
+	BLBC	R0,9999$		;If Error in Search - File Not Found
+;
+;	Merge Here When NAM Block Filled In As Far As It Can Be
+;
+300$:	$NAM_STORE  NAM=FCB$_NAM(R6),-  ;Decouple ESS Buffer
+		ESA=0, ESS=#0
+;
+;	Merge Here When SPITBOL's FCBLK Is All Set.
+;
+400$:	CLRL	R8			;No Max Reclen
+	MOVL	R6,R10			;Point to FCBLK
+	ADDL3	#8,(SP)+,R11		;Point Past Error Returns
+	JMP	(R11)			;Back To Spitbol
+	.PAGE
+;
+;	Here To Take 2nd Error Exit (I/O Not Allowed Error)
+;
+9998$:	ADDL2	#4,(SP)			;Point To 2nd Error Exit
+;
+;	Merge Here to Take Error Exit
+;
+9999$:	MOVL	(SP)+,R11		;Get Return Address Pointer
+	JMP	@(R11)+			;Through The Eye of The Storm We Go...
+	.PAGE
+	.SBTTL	SYSOPEN: Open/Create File if Necessary - Preamble
+	WORKSECT
+;
+;	SPITBOL semantics call for file opening/creating to be deferred
+;	after the initial INPUT()/OUTPUT() call until an I/O operation
+;	actually references the file.  The OSINT modules: SYSIL, SYSOU,
+;	SYSEN, SYSRW and SYSEF thus all reference this module to open
+;	the referenced file if that has not yet been done.
+;
+;	This module performs the following functions:
+;	 
+;	1. Issue a $FCBSET macro on the FCBLK given in WA/R6 in order to
+;	   assure that the intra-FCBLK pointers are properly set.
+;	2. Issue an RMS $OPEN or $CREATE depending on whether the PUT
+;	   bit is set in the File Processing Options Word of the given FAB.
+;	3. If Step 2 Is Not Successful, This Module Exits Immediately,
+;	   With the RMS Status in R0.  Otherwise, a $CONNECT is then Issued
+;	   for the Associated RAB.
+;	4. If The Device Is A Unit Record Device and The FCBLK Record Size
+;	   Word Is Zero, It Is Filled With The Maximum Reclen Of the Device
+;
+	.PAGE
+	.SBTTL	SYSOPEN: Working Store
+;
+;	This Is The Character String Descriptor Area Used In The
+;	Call To GETDEV To Point To The Device Name String In The FCBLK
+;
+SYSOP_GDVSD::	.LONG	0		;String Length-Filled Dynamically
+		.LONG	0		;String Pointer-Filled Dynamically
+;
+;	This Is The Descriptor and Primary Device Characteristics Buffer
+;	Stored Into By GETDEV
+;
+SYSOP_GDVBD::	.LONG	DIB$K_LENGTH	;Length Of Buffer (Full Size)
+		.LONG	SYSOP_GDVBF	;Address Of Buffer
+SYSOP_GDVBF::	.BLKB	DIB$K_LENGTH	;Buffer Here
+	.PAGE
+	.SBTTL	SYSOPEN: Mainline Code
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	Pointer to FCBLK (See SYSFC For Details)
+;		JSB	SYSOPEN
+;		(R0) -		RMS Status From Operation.  If The File
+;				Is Already OPEN, (R0) <- #RMS$_SUC
+;
+SYSOPEN::
+	$FCBSET	(R6)		;Set Non-PIC Fields of FCBLK
+	MOVL	#RMS$_SUC,R0	;Assume All Will Go Well
+	TSTW	FCB$_FAB+FAB$W_IFI(R6)  ;Check File Ident In FAB To See If OPEN
+	BEQL	30$		;If Not Open Now, Continue
+	BRW	300$		;Else Exit with Success in R0
+;
+;	Continue Here when File is Not Yet Open
+;
+30$:	BBS	#RAB$V_EOF,-	;No Create if EOF Switch Specified
+		FCB$_RAB+RAB$L_ROP(R6),50$
+	BBS	#FAB$V_PUT,-	;Else Not Open, Check For $CREATE Needed
+		FCB$_FAB+FAB$B_FAC(R6),100$
+;
+;	Here to do OPEN only
+;
+50$:	$OPEN	FAB=FCB$_FAB(R6)  ;No PUT Operations Allowed. Issue OPEN
+	BLBC	R0,300$		;If Error, Exit With Status
+	BRB	200$		;Else Merge To Check Device Type
+;
+;	Here To Issue CREATE (Implies OPEN)
+;
+100$:	$CREATE	FAB=FCB$_FAB(R6)  ;Create File
+	BLBC	R0,300$		;If Error, Merge to Exit With Status
+;
+;	Merge Here To Check For Unit Record Device.  If It Is,
+;	Query The Device Pagewidth, and Stuff It In The FCBLK.
+;
+200$:	TSTW	FCB$W_RSZ(R6)	;Examine Present Contents Of Recsize Field
+	BNEQ	250$		;Skip If Already Set
+	BBC	#DEV$V_REC,-	;Is This A Unit-Record Device? Branch If No
+		FCB$_FAB+FAB$L_DEV(R6),250$
+	PUSHR	#^M<R2,R3,R4,R5>  ;Save Volatile Registers Across MOV
+	MOVC5	#0,0,#0,-	;Else Clear GETDEV Buffer Before Calling
+		#DIB$K_LENGTH,SYSOP_GDVBF
+	POPR	#^M<R2,R3,R4,R5>  ;Restore Regs.
+	MOVZBL	FCB$_NAM+NAM$B_RSL(R6),SYSOP_GDVSD  ;Set Device Name Str.Len.
+	MOVAL	FCB$_RSA(R6),SYSOP_GDVSD+4	    ;Set Device Name Str.Adr.
+	$GETDEV_S  DEVNAM=SYSOP_GDVSD,-  ;Get Device Characteristics
+		PRIBUF=SYSOP_GDVBD
+	MOVZWL	SYSOP_GDVBF+DIB$W_DEVBUFSIZ,-  ;Copy Buf.Size Into FCBLK
+		FCB$W_RSZ(R6)
+;
+;	Merge Here to Issue $CONNECT on RAB when OPEN/CREATE OK
+;
+250$:	$CONNECT  RAB=FCB$_RAB(R6)  ;Issue Connect
+;
+;	Merge Here to Exit With Status In R0
+;
+300$:	RSB
+	.SBTTL	SYSOU: Write a Record - Constant Store
+;
+;	The SYSOU Module is called from SPITBOL and from other OSINT
+;	output modules in order to print a string on a file associated
+;	with a given FCBLK.
+;
+	CONSSECT
+;
+;	This is a Pseudo-SCBLK That Contains A Single Blank.  It Is
+;	Used In Place Of The Null-String SCBLK When The Null-String
+;	Is To Be Written To A Terminal.  This Is Because RMS Will Not
+;	Cause A Blank Line On A Terminal When The Record Length Is Zero.
+;
+SYSOU_SCBNL:	.LONG	B$SCL		;Type Word (Not Really Necessary)
+		.LONG	1		;Length Count
+		.BYTE	^A" ",0,0,0	;ASCII Blank Character
+	.PAGE
+	.SBTTL	SYSOU: Mainline Code
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	FCBLK Pointer
+;		(XR/R9) - 	SCBLK With Data To Be Written
+;		JSR	SYSOU
+;		.LONG	File Full or No Attached File
+;		.LONG	Output Error
+;
+SYSOU::
+	JSB	SYSOPEN			;Create & Open If Not Already Done So
+	BLBC	R0,9998$		;If Open Error Then Branch
+	$RAB_STORE  RAB=FCB$_RAB(R6),-	;Set Descriptor for Output Buffer
+		    RBF=8(R9),RSZ=4(R9)
+	$PUT	RAB=FCB$_RAB(R6)	;Issue PUT to File
+	CMPL	R0,#RMS$_FUL		;See If File Full
+	BEQL	9999$			;Output File Full Error If So.
+	CMPL	R0,#RMS$_IFI		;See If Invalid File ID in FAB
+	BEQL	9999$			;No Attached File Error If So
+	CMPL	R0,#RMS$_ISI		;See If Invalid Stream In RAB
+	BEQL	9999$			;Not Attached File Error If So
+	BLBC	R0,9998$		;Else Output Error If LBC
+	ADDL3	#8,(SP)+,R11		;Get Set To Exit
+	JMP	(R11)			;Back To Spitbol
+;
+;	Here For I/O Error
+;
+9998$:	ADDL2	#4,(SP)			;Point to Next Alternate Return
+;
+;	Here For File Full Error
+;
+9999$:	MOVL	(SP)+,R11		;Get Return Address Pointer From Stack
+	JMP	@(R11)+			;Jump Through
+	.PAGE
+	.SBTTL	SYSPI: Print an Interactive Record - Mainline Code
+	PROGSECT
+;
+;	This module is called by Spitbol to print a line of text on
+;	the Interactive Channel, which is opened in SPITGO to "SYS$OUTPUT".
+;
+;		(XR/R9) -	SCBLK with text
+;		(WA/R6) -	Length of text
+;		JSB	SYSPI
+;		.LONG	Error Return
+;		(WA,WB) -	Destructable
+;
+SYSPI::
+	MOVL	4(R9),-(SP)		;Save Actual Length Of SCBLK
+	MOVL	R6,4(R9)		;Stuff Given Length There For SYSOU
+	MOVAL	FCB_TERMO,R6		;Point WA At FCBLK For SYS$OUTPUT
+	JSB	SYSOU			;Write Text Using SYSOU Module
+	.LONG	9999$			;File Full Error (!?)
+	.LONG	9999$			;I/O Error
+	MOVL	(SP)+,4(R9)		;Restore Actual SCBLK Length
+	ADDL3	#4,(SP)+,R11		;Else OK - Point Past Error Thread
+	JMP	(R11)			;Back To Spitbol
+;
+;	Here For Error
+;
+9999$:	MOVL	(SP)+,4(R9)		;Restore Actual SCBLK Length
+	MOVL	(SP)+,R11		;Get Pointer To Error Thread
+	JMP	@(R11)+			;Jump Through It
+	.PAGE
+	.SBTTL	SYSPR: Print a Line on Standard Output - Mainline Code
+	PROGSECT
+;
+;	This module is called by Spitbol to print a line of text on
+;	the so-called Standard Print Unit, which is the SYSOUT FCBLK
+;	that is contained in SPITGO.
+;
+;		(XR/R9) -	SCBLK with text
+;		(WA/R6) -	Length of text
+;		JSB	SYSPR
+;		.LONG	Error Return
+;		(WA/WB/WC) -	Destructable
+;
+SYSPR::
+	MOVL	4(R9),-(SP)	;Save Actual SCBLK Length
+	MOVL	R6,4(R9)	;Put Given Length There For SYSOU
+	MOVAL	FCB_SYSOUT,R6	;Put SYSOUT FCBLK Ptr In WA For SYSOU
+	JSB	SYSOU		;Call It
+	.LONG	9999$		;File Full Error
+	.LONG	9999$		;I/O Error
+	MOVL	(SP)+,4(R9)	;Restore Actual SCBLK Length
+	ADDL3	#4,(SP)+,R11	;Point Past Error Return
+	JMP	(R11)		;Back To Spitbol
+;
+;	Here For Unspecified I/O Error
+;
+9999$:	MOVL	(SP)+,4(R9)	;Restore Actual SCBLK Length
+	MOVL	(SP)+,R11	;Get Error Return Thread
+	JMP	@(R11)+		;Jump Back Through It
+	.PAGE
+	.SBTTL	SYSRD - Read a Line from Standard Input - Mainline Code
+	PROGSECT
+;
+;	This module is called by Spitbol to read a line from SYSIN
+;	which is opened in SPITGO.
+;
+;		(XR/R9) -	SCBLK Pointer for line
+;		(WC/R8) -	Buffer Length
+;		JSB	SYSRD
+;		.LONG	Endfile Return Address
+;
+SYSRD::
+	MOVAL	FCB_SYSIN,R6		;Point To SYSIN FCBLK
+	JSB	SYSIN			;Call SYSIN To Read From SYSIN
+	.LONG	9999$			;Endfile Return Thread
+	.LONG	9999$			;I/O Error Return Thread
+	.LONG	200$			;Record Format Error Ret. Thread
+;
+;	Merge to exit normally
+;
+100$:	ADDL3	#4,(SP)+,R11		;Point Past Error Exit
+	JMP	(R11)			;And Return To Spitbol
+;
+;	Here when format error (truncation)
+;
+200$:	CMPL	#STGIC,STAGE		;See if initial compile
+	BNEQU	9999$			;Not - weird error
+	PUSHL	#SPITBOL_LINETRUNC	;Issue warning
+	CALLS	#1,LIB$SIGNAL		;Call it
+	BRB	100$			;And branch up to exit normally
+;
+;	Here When Endfile Or Other I/O Error
+;
+9999$:	MOVL	(SP)+,R11		;Get Error Return Thread Ptr.
+	JMP	@(R11)+			;Jump Through It
+	.PAGE
+	.SBTTL	SYSRI: Read an Interactive Line - Mainline Code
+	PROGSECT
+;
+;	This module is called by Spitbol to read a line of text on
+;	the Interactive Channel, which is opened in SPITGO to "SYS$INPUT".
+;
+;		(XR/R9) -	Pointer to 120 Char. SCBLK for line
+;		JSB	SYSRI
+;		.LONG	Endfile Return
+;		(WA,WB,WC) -	Destructable
+;
+SYSRI::
+	MOVAL	FCB_TERMI,R6		;Point WA At FCBLK For SYS$INPUT
+	JSB	SYSOPEN			;Open it if necessary
+	BLBC	R0,9999$		;Error out if LBC
+	JSB	SYSIN			;Else read the line
+	.LONG	9999$			;Endfile Error
+	.LONG	9999$			;I/O Error
+	.LONG	9999$			;Record Format Error
+	ADDL3	#4,(SP)+,R11		;Else OK - Point Past Error Thread
+	JMP	(R11)			;Back To Spitbol
+;
+;	Here For Error
+;
+9999$:	MOVL	(SP)+,R11		;Get Pointer To Error Thread
+	JMP	@(R11)+			;Jump Through It
+	.PAGE
+	.SBTTL	SYSRW: Perform REWIND() Function - Mainline Code
+	PROGSECT
+;
+;	This module is called from SPITBOL in order to perform the
+;	I/O operation associated with the REWIND() function call.
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	FCBLK Pointer (See SYSFC for details)
+;		(XR/R9) - 	REWIND(arg) SCBLK argument pointer
+;		JSR	SYSRW
+;		.LONG	File Does Not Exist Error
+;		.LONG	REWIND Not Allowed
+;		.LONG	I/O Error
+;
+SYSRW::
+	JSB	SYSOPEN		;Open The File If Necessary
+	BLBC	R0,9999$	;Any Open Problem Means File Does Not Exist Err
+	$REWIND	RAB=FCB$_RAB(R6)  ;Attempt to Rewind The File
+	CMPL	R0,#RMS$_BOF	;Beginning Of File Error Is No Error
+	BEQL	100$		;Merge With Success Exit
+	CMPL	R0,#RMS$_IOP	;Is It Illegal Operation Status?
+	BEQL	9998$		;If So, Then REWIND Not Allowed Error
+	BLBC	R0,9997$	;Any Other Error Is I/O Error
+;
+;	Merge Here To Exit Successfully
+;
+100$:	ADDL3	#12,(SP)+,R11	;OK - Point Past Error Return Vectors
+	JMP	(R11)		;And Jump Back
+;
+;	Here For I/O Error Return
+;
+9997$:	ADDL2	#4,(SP)		;Bias To Next Error Return Vector
+;
+;	Here For REWIND Not Allowed
+;
+9998$:	ADDL2	#4,(SP)		;Bias To Next Error Return Vector
+;
+;	Here For No Such File Error
+;
+9999$:	MOVL	(SP)+,R11	;Get Error Vector Pointer From Stack
+	JMP	@(R11)+		;Jump Through It
+	.END

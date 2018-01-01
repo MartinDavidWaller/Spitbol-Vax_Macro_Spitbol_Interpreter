@@ -1,0 +1,533 @@
+
+
+
+
+
+
+
+
+1:   SPITBOL now requires V2.0 of VMS or higher.
+
+
+
+2:   The command  line  syntax  has  been  extended  to  conform  more
+
+     closely  with  DCL  convention.   Switches  are  permitted at any
+
+     place in  the  command  line.   Multiple  input  files  separated
+
+                                        not
+     either by commas or plus signs are ___ supported.
+
+
+
+3:   A  new  switch  form  /OUTPUT[=filename] (and /NOOUTPUT) has been
+
+     added.  /LIST  now  controls  the  standard  output  channel  for
+
+     source  listing data, and by default for execution data.  /OUTPUT
+
+     allows a different channel for execution data.  /NOLIST also  now
+
+     implies /NOCSTATS and /NOESTATS.
+
+
+
+4:   SPITBOL  now  attempts to compute a proper width for the standard
+
+     output file.  A new switch "/WIDTH=n" can  be  used  to  override
+
+     any  default.  Otherwise, if the output device is record-oriented
+
+     (including spooled files), the default  is  the  buffer  for  the
+
+     device  as  indicated  by  VMS.   If  the  buffer  size cannot be
+
+     obtained, or is outside the range [0..255], then a final  default
+
+     of 132 (decimal) is applied.
+
+
+
+5:   The  "Create-If"  option of RMS has been made available as a file
+
+     option on an OUTPUT(...) call.  This makes it possible to  append
+
+     to  (existing)  output  files using the /CIF and /EOF switches in
+
+     concert.
+
+
+
+6:   New switches /NOWARN and  /WARN,  have  been  incorporated.   The
+
+     /NOWARN  switch on the startup command line will cause SPITBOL to
+
+     continue  from  any  success,  informational  or  warning  errors
+
+     without  issuing  any  %SPITBOL... message.  This applies only to
+
+     errors issued by the VMS interface routines.  It  has  no  effect
+
+     on   SPITBOL's   program   error   messages   that  occur  during
+
+     compilation or runtime.
+
+
+
+7:   The default for the -IN card is now  132.   This  will  hopefully
+
+     minimize  the  number  of  indecipherable problems where programs
+
+     don't do what is expected  because  the  compiler  truncates  the
+
+     source  image.   If  such  a  truncation does occur, a warning is
+
+     issued.  For sequence numbered source,  use  the  /NOWARN  switch
+
+     and  an explicit -IN80 card.  Users of sequence numbers should be
+
+     aware that the sequence number  capabilities  are  slated  to  be
+
+     removed from SPITBOL in a future release.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+                                                                     PAGE 2
+
+
+
+
+
+8:   SPITBOL    now   attempts   to   translate   the   logical   name
+
+     "SYS$SITENAME" to obtain  a  site  name  for  the  banner.   This
+
+     avoids  the  need to reassemble and link the interpreter for each
+
+     site.  A line in SYS$MANAGER:SYSTARTUP.COM something like:
+
+
+
+         $ ASSIGN/SYST "Arthur Astaire Dance Studio" SYS$SITENAME
+
+
+
+     is recommended.  Individual users can override this by  inserting
+
+     an  entry  in  their  own  process or group logical name table if
+
+     they wish.  This string must be 28 or fewer  characters.   It  is
+
+     advised  that  use  of  the  colon character (":") in this string
+
+     should be avoided to prevent  confusion  in  programs  that  call
+
+     HOST().
+
+
+
+9:   The  SQO  bit  is set by default on all files to allow for proper
+
+     operations over DECNET.
+
+
+
+10:  At startup, LIB$LP_LINES is called to get the page length.   From
+
+     the  value returned (66 unless SYS$LP_LINES is assigned), six  is
+
+     subtracted to leave room for assumed page shoulders.
+
+
+
+11:  SPITBOL now makes use of  the  VMS  MESSAGE  facility  for  error
+
+     messages.   The  major  impact this has is to cause the values of
+
+     $SEVERITY and $STATUS to be correctly set on exit  from  SPITBOL.
+
+     Note  also  that  the value of &CODE is used as the return status
+
+     of SPITBOL, assuming the user program terminates  normally.   The
+
+     default  value  of  &CODE  is  one,  indicating NORMAL SUCCESSFUL
+
+     COMPLETION to VMS, without any message being displayed.
+
+
+
+12:  The  option  switches  on  INPUT  and  OUTPUT  filenames  can  be
+
+     abbreviated  with  NOoption  as well as -option to complement the
+
+     option.  The "-" form will be eliminated in the next release  and
+
+     programs which use it should be changed.
+
+
+
+13:  In  general,  it is not possible to determine the exact nature of
+
+     the RMS error that causes  a  SPITBOL  I/O  error  message.   One
+
+     exception  is  the error "INPUT FILE RECORD HAS INCORRECT FORMAT"
+
+     which is caused only by a  record  truncation  by  RMS.   SPITBOL
+
+     does  its  best to find out the maximum record size for files and
+
+     devices that are input associated,  in  order  to  allocate  read
+
+     buffers.   If,  however,  that  cannot  be done it uses a default
+
+     buffer of 2048. bytes. Thus, this error cannot  appear  for  disk
+
+     files  unless the file header itself is corrupt.  It is, however,
+
+     possible   for   certain   unit-record   devices    in    unusual
+
+     circumstances.
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+                                                                     PAGE 3
+
+
+
+
+
+14:  A  point  of  some  confusion  that  needs  clarification is that
+
+     SPITBOL maps its dynamic work area starting  approximately  at  a
+
+     virtual  address  of  1,000,000  (decimal) in P0 space.  The code
+
+     resides, as usual, at the base of P0.  This means that there  are
+
+     a  large  number  of  unmapped pages in P0 space.  Although these
+
+     pages are unmapped, they do require system page table  registers,
+
+     and  hence  are  counted  against  VMS's  VIRTUALPAGECNT  maximum
+
+     virtual page count  allocation.   This  means  that  the  largest
+
+     SPITBOL  program  may  not  be as large as the installation might
+
+     expect (by about 2000 pages)  Since these unmapped pages are  not
+
+     placed  in  the system page file, the easiest remedy is simply to
+
+     increase the value of VIRTUALPAGECNT in SYSGEN and reboot.   This
+
+     value  of  1,000,000  is controlled by the "BASE=" value assigned
+
+     in the SPITBOL link options file.  While it can be made  smaller,
+
+     it  is  not recommended for two reasons.  One is that the maximum
+
+     size of SPITBOL objects is controlled by this value.   The  other
+
+     reason  is  that  space  below  the  interpreter is mapped in for
+
+     external LOAD functions.
+
+
+
+15:  SPITBOL now makes use  of  the  V2.0  automatic  stack  extension
+
+     feature.   This  means  that P1 (user stack) space is extended as
+
+     needed, until a virtual limit or quota is  exceeded.   Thus  when
+
+     stack  overflow  does  occur, it is usually because an infinitely
+
+     recursive function  call  chain  and/or  pattern  is  soaking  up
+
+     stack.   There  is  really no way to recover from this condition,
+
+     and so the handling of stack overflow is now to stop the  program
+
+     immediately  with  a  termination  message on the standard output
+
+     file.  &CODE is also set to signal %SPITBOL-F-STACKOVFL  on  exit
+
+     when  this  happens.   Note  that it is not possible to capture a
+
+     STACK OVERFLOW error regardless of the setting  of  &ERRLIMIT  or
+
+     SETEXIT().    If   this   causes  incompatibility  with  existing
+
+     programs, it will likely be possible to check or trace  &FNCLEVEL
+
+     to achieve the same effect.
+
+
+
+16:  The  EXIT  function  has  been  implemented  in  all forms except
+
+     positive integer arguments (that is to say,  there  is  no  total
+
+     image  save).   EXIT(0)  will pause the program; a DCL "CONTINUE"
+
+     command  will  continue  execution.   EXIT(string)   will   cause
+
+     SPITBOL  to  exit  and  "string" will be given to DCL as the next
+
+     command (ref. LIB$DO_COMMAND in the VMS System Library  Reference
+
+     Manual).   Note  that  this subsumes the normal SPITBOL semantics
+
+     of EXIT(string) for chain execution if the string is of the  form
+
+     "RUN  image".   It  is  also  possible to initiate a command file
+
+     (including one written by the program itself) if  the  string  is
+
+     of the form: "@command-file".
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+                                                                     PAGE 4
+
+
+
+
+
+     EXIT(-n)  is  implemented,  and  will save the impure segments of
+
+     the interpreter in a specially formatted block  mode  file.   The
+
+     name  for  this file is the same as the standard input file, with
+
+     an extension ".SEX" (Spitbol EXit!) under the default  directory.
+
+     If  such  a  file  already  exists,  it  will  be reused (with an
+
+     extension  of  space  if  required),  otherwise  a  new  file  is
+
+     allocated.   The startup switch "/LOAD[=filename]" can be used to
+
+     load a previously saved .SEX file.  If  the  "=filename"  is  not
+
+     specified  on the load, the default LOAD name is the same as that
+
+     described above.  Specification of /LOAD  does  not  obviate  the
+
+     need  to specify a standard input file, although it need not have
+
+     the same name as the save file, and trivially  could  be  "NLA0:"
+
+     if no use is to be made of the standard input channel.
+
+
+
+     Certain  remarks  are in order regarding this form of EXIT.  When
+
+     a previously saved  .SEX  file  is  loaded,  SPITBOL  performs  a
+
+     number  of  fairly  extensive  checks  to verify that this impure
+
+     segment is compatible with the version  of  SPITBOL  being  used.
+
+     If  it is not, the file will not be loaded and one of a number of
+
+     fatal errors will be issued.  Even  if  the  SPITBOL  version  is
+
+     compatible,  it  is  (remotely)  possible  that stack utilization
+
+     changes in new VMS releases could render  a  previously  operable
+
+     exit  module  unloadable.   Again, a fatal error would be issued.
+
+     The general conclusion should be that the file  created  by  EXIT
+
+     is  not  really  analogous  to a "permanent" object or executable
+
+     binary.  The original source must be retained in the  event  that
+
+     a retranslation is indicated.
+
+
+
+     One  other  point  should  be noted as regards EXIT(-n).  Neither
+
+     the status of open files, nor  external  LOAD(...)  functions  is
+
+     preserved  across  an EXIT(-n);  this includes the standard input
+
+     and output files, which are  instead  associated  anew  when  the
+
+     exit  module  is  reloaded using the filenames given on the /LOAD
+
+     startup line.  In general, INPUT(...), OUTPUT(...) and  LOAD(...)
+
+     calls  should  be  made after the call to EXIT(-n).  In addition,
+
+     the load-time values (default or explicit)  of  /MINC  and  /MINT
+
+     override  whatever values were in effect when the exit module was
+
+     saved (SPITBOL will, however, always  attempt  to  obtain  enough
+
+     virtual  space  to  hold  the  impure  data  of  the exit module,
+
+     regardless  of  the  setting  of  /MINT.)   If  the  EXIT(-1)  or
+
+     EXIT(-2)  forms  are used, then the load-time values of the other
+
+     startup command line switches override the values at the time  of
+
+     the EXIT.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+                                                                     PAGE 5
+
+
+
+
+
+     There are no plans at present to implement EXIT(+n) operations.
+
+
+
+17:  A  new switch /NOCRC can be used to speed up (slightly) the /LOAD
+
+     operation.  See the manual for details.
+
+
+
+18:  Dynamic LOADing of external functions via the LOAD(...)  function
+
+     is  now  provided.   This  can  be  used  to  give  access to VMS
+
+     operations that cannot be performed in  SPITBOL,  or  to  provide
+
+     alternative  code  that  is  more  efficient  than the equivalent
+
+     operation would be in SPITBOL.  In its  present  form,  LOAD(...)
+
+     is  a  bit  tricky  to  use;  section  10 of the reference manual
+
+     should be consulted for a complete discussion of its use.
+
+
+
+     The dynamic loading on maps in new image  sections,  it  does  no
+
+     relocation,  so  LOADed  code should contain Position Independent
+
+     Content  (PIC),  and  should  not  contain  any  .ADDRESS  linker
+
+     directives  that  require  link-time  relocation.  While Fortran,
+
+     Basic  and  Bliss  code  will  meet  the  first  requirement,  it
+
+     generally  will  not  meet  the  second.   To  such an end, it is
+
+     possible to predict  in  advance  where  SPITBOL  will  load  the
+
+     external  image,  and  to link the external image with the proper
+
+     base address.  Using this  technique  it  is  possible  to  write
+
+     dynamic  LOAD  code in any language without a need to ever resort
+
+     to MACRO32.
+
+
+
+19:  The initial delivery which generates the  reference  manual  also
+
+     now  re-reads itself with different formatting macros in order to
+
+     generate a copy of the manual in help text format.  This  can  be
+
+     inserted  in  the  system help library SYS$HELP:HELPLIB.HLB using
+
+     the librarian (see the installation notes).  This uses about  300
+
+     blocks  of  disk  space,  so sites which are short on system disk
+
+     space may, of course, choose not to install it.
+
+
+
+20:  The square brackets ("[...]") around the account name  string  in
+
+     the  HOST()  call have been taken out (they had no business being
+
+     there in the first place).   Programs  which  make  use  of  this
+
+     field  may  require slight modification since the location of the
+
+     string relative to the delimiter has changed.
+

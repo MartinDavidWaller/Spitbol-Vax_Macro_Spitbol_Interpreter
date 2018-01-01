@@ -1,0 +1,282 @@
+;
+;	COPYRIGHT (c) 1981 under BERNE and UNIVERSAL COPYRIGHT
+;	LAW by DEWAR INFORMATION SYSTEMS CORPORATION.
+;
+;	The software described in this document is proprietary
+;	to DEWAR INFORMATION SYSTEMS CORPORATION and furnished
+;	to the purchaser under a license  for use on a  single
+;	computer  system and can be copied (with the inclusion
+;	of DEWAR INFORMATION SYSTEMS  CORPORATIONS's copyright 
+;	notice) only for use in such system.
+;
+;
+;	This software is the property of:
+;
+;	Steven G. Duff
+;	c/o Dewar Information Systems Corp.
+;	221 West Lake Street
+;	Oak Park, Illinois  60302
+;	(312) 524-1644
+;
+;
+;	This is a source file for the VAX/VMS MACRO SPITBOL macro
+;	library.  The first section is macros used primarily when
+;	assembling any of the sources, the second section consists
+;	of macros that define deferred MINIMAL opcodes and are hence
+;	needed when assembling the interpreter.
+;
+; MODIFIED 01-MAR-81 [SGD]:
+;	Nulled out CHK macro to allow VMS V2.0 automatic stack extension to
+;	work.
+;
+	.MACRO	CONSSECT NAME=CONSSECT	;Constant storage program section
+	.PSECT	NAME,LONG,NOEXE,NOWRT,SHR
+	.ENDM
+;
+	.MACRO	$FCB		;Define an FCBLK
+	.ALIGN	LONG,0		;Get longword aligned
+	.LONG	0		;Block ID
+	.LONG	FCB$K_BLN	;FCBLK Length
+	.LONG	0		;Reclen/Bits
+	$FAB	MRS=0,ORG=SEQ,-	;Standard FAB
+		RAT=CR,RFM=VAR,FOP=<NAM,SQO>
+	$RAB			;Standard RAB
+	$XABFHC			;File Header XAB
+	$NAM	RSS=NAM$C_MAXRSS ;NAM Block
+	.BLKB	NAM$C_MAXRSS	;Dumping Ground for Filename String
+	.BLKB	NAM$C_MAXRSS	;Ditto for Resultant String Area for NAM Block
+	.ALIGN	LONG,0		;Ought to be anyway, but just to be sure.
+	.ENDM
+;
+	.MACRO	$FCBDEF		;Define FCBLK Offsets
+	$FABDEF			;Get FAB Offsets
+	$RABDEF			;Get RMS RAB Offsets
+	$XABFHCDEF			;Get RMS XAB Offsets
+	$NAMDEF			;Get RMS NAM Block Offsets
+FCB$L_BID=0			;Block ID (Used only by Spitbol)
+FCB$L_BLN=FCB$L_BID+4		;Offset to Block Length of FCBLK
+FCB$W_RSZ=FCB$L_BLN+4		;Offset to Record Size Word of FCBLK
+FCB$W_BTS=FCB$W_RSZ+2		;Offset to status bits word of FCBLK
+FCB$_FAB=FCB$W_BTS+2		;Offset to FAB
+FCB$_RAB=FCB$_FAB+FAB$K_BLN	;Offset to RAB
+FCB$_XFH=FCB$_RAB+RAB$K_BLN	;Offset to XAB/FHC
+FCB$_NAM=FCB$_XFH+XAB$K_FHCLEN	;Offset to NAM Block
+FCB$_FNM=FCB$_NAM+NAM$K_BLN	;Offset to filename string field
+FCB$_RSA=FCB$_FNM+NAM$C_MAXRSS	;Offset to Resultant File String of NAM
+FCB$K_BLN=FCB$_RSA+NAM$C_MAXRSS	;Length of Basic FCBLK
+	.ENDM
+;
+	.MACRO	$FCBSET	ADDR	;Runtime Setup of Non-PIC Fields of FCBLK
+	MOVAL	ADDR,R1		;Use R1 as FCBLK Pointer
+	$FAB_STORE	FAB=FCB$_FAB(R1),FNA=FCB$_FNM(R1),-
+			NAM=FCB$_NAM(R1),XAB=FCB$_XFH(R1)
+	$RAB_STORE	RAB=FCB$_RAB(R1),FAB=FCB$_FAB(R1)
+	$NAM_STORE	NAM=FCB$_NAM(R1),RSA=FCB$_RSA(R1)
+	.ENDM
+;
+	.MACRO	IDENT	MODULE,MAJOR,MINOR
+	.IDENT	/V35-'MAJOR'MINOR/
+IDENT_'MODULE==^A/'MAJOR/
+MINOR_'MODULE==^A/'MINOR/
+	.ENDM
+;
+	.MACRO	PROGSECT NAME=PROGSECT	;Program section
+	.PSECT	NAME,LONG,EXE,NOWRT,SHR
+	.ENDM
+;
+	.MACRO	SAVESECT NAME=SAVESECT	;Working store saved across loads
+	.PSECT	NAME,LONG,NOEXE,WRT,NOSHR
+	.ENDM
+;
+	.MACRO	WORKSECT NAME=WORKSECT	;Working storage section
+	.PSECT	NAME,LONG,NOEXE,WRT,NOSHR
+	.ENDM
+;
+;	This section defines the 'unresolved' macros
+;	resulting from the MINIMAL XFER translator.
+;
+;	Due to an Unfortunate Incident, This Macro Source File had to
+;	be reconstructed from the macro library.  That is the reason for
+;	the paucity of comments.  Apologies. - Steve Duff
+;
+	.MACRO	AOV	OPV,OPW,PLBL,?L1
+	ADDL2	OPV,OPW
+	BVC	L1
+	JMP	PLBL
+L1:
+	.ENDM
+	.MACRO	BSW	X,VAL,PLBL
+	CASEL	X,#0,#VAL
+	BSW_START=.
+	.IF B PLBL
+	.WORD	0[VAL]
+	.IF_FALSE
+	GEN_CNT=VAL
+	GENWDS	PLBL
+	.ENDC
+	BSW_END=.
+	.ENDM
+	.MACRO	CMC	PLBL1,PLBL2,?L1,?L2,?L3,?L4,?L5
+	PUSHR	#^M<R2,R3>
+	ASHL	#-15,R6,R11
+	BEQLU	L2
+L1:	CMPC3	#32768,(R10),(R9)
+	BLSSU	L3
+	BGTRU	L4
+	ADDL2	#32768,R10
+	ADDL2	#32768,R9
+	SOBGTR	R11,L1
+	BICL2	#^XFFFF8000,R6
+	BEQLU	L5
+L2:	CMPC3	R6,(R10),(R9)
+	BGTRU	L4
+	BEQLU	L5
+L3:	POPR	#^M<R2,R3>
+	CLRL	R10
+	CLRL	R9
+	JMP	PLBL1
+L4:	POPR	#^M<R2,R3>
+	CLRL	R10
+	CLRL	R9
+	JMP	PLBL2
+L5:	POPR	#^M<R2,R3>
+	CLRL	R10
+	CLRL	R9
+	.ENDM
+	.MACRO	CVD
+	ASHQ	#-32,R4,R4
+	EDIV	#10,R4,R5,R6
+	MNEGL	R6,R6
+	BISB2	#^X30,R6
+	.ENDM
+	.MACRO	CVM	PLBL,?L1,?L2
+	MULL2	#10,R5
+	BVC	L1
+	JMP	PLBL
+L1:	BICL2	#^XFFFFFFF0,R7
+	SUBL2	R7,R5
+	BVC	L2
+	JMP	PLBL
+L2:
+	.ENDM
+	.MACRO	ESW
+	.=BSW_END
+	.ENDM
+	.MACRO	GENWDS	LAB
+	.IF EQ	GEN_CNT
+	.MEXIT
+	.ENDC
+	GEN_CNT=GEN_CNT-1
+	.WORD	<LAB-BSW_START>
+	GENWDS	LAB
+	.ENDM	GENWDS
+	.MACRO	IFF	VAL,PLBL
+	.=BSW_START+<2*VAL>
+	.WORD	PLBL-BSW_START
+	.ENDM
+	.MACRO	INO	PLBL,?L1
+	BVS	L1
+	JMP	PLBL
+L1:
+	.ENDM
+	.MACRO	IOV	PLBL,?L1
+	BVC	L1
+	JMP	PLBL
+L1:
+	.ENDM
+	.MACRO	MFI	OPN,PLBL,?L1
+	MOVL	R5,OPN
+	.IF NB PLBL
+	BGEQ	L1
+	JMP	PLBL
+L1:
+	.ENDC
+	.ENDM
+	.MACRO	MVC	?L1,?L2,?L3
+	PUSHR	#^M<R2,R3,R4,R5>
+	ASHL	#-15,R6,R11
+	BEQLU	L2
+L1:	MOVC3	#32768,(R10),(R9)
+	ADDL2	#32768,R10
+	ADDL2	#32768,R9
+	SOBGTR	R11,L1
+	BICL2	#^XFFFF8000,R6
+	BEQLU	L3
+L2:	MOVC3	R6,(R10),(R9)
+	ADDL2	R6,R10
+	ADDL2	R6,R9
+L3:	POPR	#^M<R2,R3,R4,R5>
+	.ENDM
+	.MACRO	MVW
+	MVC
+	.ENDM
+	.MACRO	MWB	?L1,?L2,?L3
+	PUSHR	#^M<R2,R3,R4,R5>
+	ASHL	#-8,R6,R11
+	BEQLU	L2
+L1:	SUBL2	#256,R10
+	SUBL2	#256,R9
+	MOVC3	#256,(R10),(R9)
+	SOBGTR	R11,L1
+	BICL2	#^XFFFFFF00,R6
+	BEQLU	L3
+L2:	SUBL2	R6,R10
+	SUBL2	R6,R9
+	MOVC3	R6,(R10),(R9)
+L3:	POPR	#^M<R2,R3,R4,R5>
+	.ENDM
+	.MACRO	RMI	OPS
+	ASHQ	#-32,R4,R4
+	EDIV	OPS,R4,R11,R5
+	.ENDM
+	.MACRO	RNO	PLBL,?L1
+	BVS	L1
+	JMP	PLBL
+L1:
+	.ENDM
+	.MACRO	ROV	PLBL,?L1
+	BVC	L1
+	JMP	PLBL
+L1:
+	.ENDM
+	.MACRO	SEC
+	.IF NDF SEC_CNT
+	SEC_CNT=0
+	.ENDC
+	SEC_CNT=SEC_CNT+1
+	.IF EQ SEC_CNT-1
+	.ENDC
+	.IF EQ SEC_CNT-2
+	.ENDC
+	.IF EQ SEC_CNT-3
+	CONSSECT
+	.ENDC
+	.IF EQ SEC_CNT-4
+	WORKSECT
+WORKS$::
+	.ENDC
+	.IF EQ SEC_CNT-5
+	PROGSECT
+START$::
+	.ENDC
+	.IF EQ SEC_CNT-6
+STACK$::
+	.ENDC
+	.IF EQ SEC_CNT-7
+ERROR$::
+	.ENDC
+	.ENDM
+	.MACRO	TRC	?L1,?L2,?L3
+	PUSHR	#^M<R2,R3,R4,R5>
+	ASHL	#-15,R6,R11
+	BEQLU	L2
+L1:	MOVTC	#32768,(R10),#0,(R9),#32768,(R10)
+	ADDL2	#32768,R10
+	SOBGTR	R11,L1
+	BICL2	#^XFFFF8000,R6
+	BEQLU	L3
+L2:	MOVTC	R6,(R10),#0,(R9),R6,(R10)
+	CLRL	R10
+	CLRL	R9
+L3:	POPR	#^M<R2,R3,R4,R5>
+	.ENDM

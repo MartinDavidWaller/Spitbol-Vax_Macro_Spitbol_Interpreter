@@ -1,0 +1,39 @@
+;
+;	This is the canonic entry point for high-level language routines
+;	used as Spitbol LOAD functions.  To use SPIT$LOAD_CALL, the
+;	entry point of the user's code must be a CALL entry named
+;	SPIT$LOAD_ENTRY.
+;
+SPIT$LOAD_CALL::.WORD	^M<R2,R3,R4,R5,R6,R7,R8,R9,R10>
+	JMP	SPIT$LOAD_ENTRY+2		;Branch to canonic name
+;
+;	The next two entry points are provided for the routine to
+;	return to Spitbol.  SPIT$FAIL_RETURN has no arguments; it
+;	just causes failure.  SPIT$SUCCESS_RETURN has one argument -
+;	which is the value to return.  These routines must be called
+;	from the same calling level as the entry point.
+;
+SPIT$FAIL_RETURN::.WORD	0
+	CLRL	R0				;Indicate failure
+	BRB	SPIT$LOAD_RETURN		;Back to SYSLD
+;
+SPIT$SUCCESS_RETURN::.WORD 0
+	MOVL	#1,R0				;Indicate success
+	MOVAL	@4(AP),R1			;Get address of object
+;
+;	Here to return to SYSLD.  We pop the current
+;	stack frame after diddling up the saved PC in the stack frame
+;	which puts us back in the loaded routine's
+;	environment but still within this code.  Then we execute
+;	a true return to get back to SYSLD.
+;
+SPIT$LOAD_RETURN:
+	MOVAL	SPIT$LOAD_RTNCONT,16(FP)	;Meddle saved PC
+	RET					;"Return"
+;
+;	The above RET should return to here.  We just execute a
+;	return to SYSLD.
+;
+SPIT$LOAD_RTNCONT:
+	RET
+	.END	SPIT$LOAD_CALL

@@ -1,0 +1,1860 @@
+	.TITLE	SPITSYS	OSINT Modules [Except I/O]
+;
+;	COPYRIGHT (c) 1981 under BERNE and UNIVERSAL COPYRIGHT
+;	LAW by DEWAR INFORMATION SYSTEMS CORPORATION.
+;
+;	The software described in this document is proprietary
+;	to DEWAR INFORMATION SYSTEMS CORPORATION and furnished
+;	to the purchaser under a license  for use on a  single
+;	computer  system and can be copied (with the inclusion
+;	of DEWAR INFORMATION SYSTEMS  CORPORATIONS's copyright 
+;	notice) only for use in such system.
+;
+;
+;	This software is the property of:
+;
+;	Steven G. Duff
+;	c/o Dewar Information Systems Corp.
+;	221 West Lake Street
+;	Oak Park, Illinois  60302
+;	(312) 524-1644
+;
+	.PAGE
+	.SBTTL	SPITSYS - Definitions
+;
+	.LIBRARY	"SYS$LIBRARY:LIB"
+	.LIBRARY	"SPITMACS"
+;
+	IDENT	SPITSYS,B,7
+;
+	$CHFDEF			;Mechanism Argument Vector Offsets
+	$CLIDEF			;Define CLI Offsets.
+	$IACDEF			;Image Activator Flags
+	$IHDDEF			;Image Header Offsets
+	$IHADEF			;Image Activator Offsets
+	$JPIDEF			;Define JPI Codes
+	$RMSDEF			;RMS definitions
+	$SECDEF			;Section map offsets
+	$SSDEF			;System Exception Definitions
+	.PAGE
+	.SBTTL	SPITSYS - Revision History
+;
+; V35-B7 10-AUG-1981 [SGD]:
+; o Fixed stack size computation in SYSXI_RELOAD
+; o Changed SYSXI_RELOAD to use file to create/map private sections
+;   rather than read data in directly.
+;
+; V35-B6 08-AUG-1981 [SGD]:
+; o Enhancement to SYSBX to handle new semantics of /OUTPUT=...
+; o Modification of SYSXI_RELOAD and SYSXI_CRCCODE to handle /CRC & /NOCRC
+;
+; V35-B5 30-JUL-1981 [SGD]:
+; o Put startup line &ERRTEXT logic in SYSXI_RELOAD so that command
+;   line gets copied in on a return from EXIT(...)
+;
+; V35-B4 18-JUL-1981 [SGD]:
+; o Incorporated access check in SYSEX$ on returned reference pointer
+;   in R1 (if R0 indicates success).  This helps insure that an
+;   access violation is caught before it makes its way back into
+;   SYSEX proper, where no execption handler exists.
+;
+; V35-B3 18-JUN-1981 [SGD]:
+; o Altered logic in SYSPP to clear SPITGO's option bits before giving
+;   the options to SPITBOL.
+;
+; V35-B2 25-MAY-1981 [SGD]:
+; o Fixed minor problem in SYSID - [...] was around account string which
+;   seems ridiculous.
+; o Inserted SYSEX, SYSLD and SYSUL
+;
+; V35-B1 18-APR-1981 [SGD]:
+; o New modules SYSXI and SYSIDENT
+; o SYSEJ handling of Execution Suppressed and No Output File endruns
+;   changed as VMS does not print informational messages on $EXIT service.
+;   SYSID now uses logical name SYS$SITENAME as the site name
+;
+; V35-A1 13-FEB-1981 [SGD]:
+; o Revised SYSEM to use standard message file.
+; o Deleted SPITGO register save area , and set SYSEJ to use $EXIT
+;   instead.  Changed SYSBX to default &CODE at startup to one.
+; o Removed SYSCHK as no longer used (see SPITGO)
+;
+; V35-002 14-JUN-1980 [SGD]:
+; o Incorporated logic to put initial startup command line string
+;   into &ERRTEXT.  (";" made legal as command line terminator - see SPITGO).
+	.PAGE
+	.SBTTL	SPITSYS - Preamble
+;
+;	This package contains all the VAX/VMS MACRO SPITBOL OSINT (including
+;	the error message handler), except those dealing directly with I/O.
+;	It includes...
+;
+;	SYSAX	- Called just after execution of program begins
+;	SYSBX	- Called just before execution of the program begins
+;	SYSDC	- Check date for trial version
+;	SYSDM	- Dump core
+;	SYSDT	- Get current DATE/TIME for DATE()
+;	SYSEJ	- End of job processing
+;	SYSEM	- Get text of error message
+;	SYSEX	- Call external function
+;	SYSHS	- HOST() Function
+;	SYSID	- Provide ID strings for banner
+;	SYSIDENT- Return version strings (4 chars) in R0/R1
+;	SYSINV	- Invalid jump handler
+;	SYSLD	- Load external function (LOAD(...))
+;	SYSMM	- Get more address space for dynamic
+;	SYSMX	- Get MXLEN value
+;	SYSPP	- Get startup print parameters
+;	SYSTM	- Get execution time so far
+;	SYSTT	- Toggle trace switch
+;	SYSUL	- Unload external function (UNLOAD(...))
+;	SYSXI	- EXIT() Function
+;
+;	Those routines with a two letter SYS** suffix are 'official'
+;	MACRO SPITBOL OSINT routines.  A longer suffix is indicative of
+;	an OSINT routine which is peculiar to the VAX/VMS version of
+;	MACRO SPITBOL only.
+;
+	.PAGE
+	.SBTTL	SYSAX: After Program Execution (No-Op)
+;
+;	This module is called by SPITBOL after to executing the program.
+;	At the present time, there is nothing for this module to do,
+;	so it just returns.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSAX
+;
+SYSAX::
+	RSB				;That's easy!
+	.PAGE
+	.SBTTL	SYSBX: Before Program Execution
+;
+;	This module is called by SPITBOL prior to executing the program,
+;	but after it has been interpreted.
+;
+;	This module does the following:
+;
+;	o Assuming the command line is not null, an SCBLK is allocated
+;	  in dynamic and the startup command line copied into it.  Then
+;	  &ERRTEXT (R$ETX) is pointed to it.
+;	o Sets default value of &CODE to one to avoid silly message at
+;	  image rundown from VMS when returned code is zero.
+;       o Closes and re-opens new SYSOUT channel if /NOOUTPUT or
+;	  /OUTPUT=... specified at startup.  New name is one given, or NL:
+;	  if /NOOUTPUT requested.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSBX
+;
+SYSBX::
+	PUSHR	#^M<R6,R7,R8,R9,R10>	;Save volatile regs. for exit.
+	MOVL	PARSE_GCBLK+CLI$Q_RQDESC,R6  ;Get command line length.
+	BEQL	100$			;Forget it if null.
+	JSB	ALOCS			;Else allocate SCBLK for it.
+	MOVC3	R8,-			;Copy in characters
+		@PARSE_GCBLK+CLI$Q_RQDESC+4,4*SCHAR(R9)
+	MOVL	R9,R$ETX		;And Point &ERRTEXT at it.
+;
+;	Merge Here After R$ETX (&ERRTEXT) set properly.
+;
+100$:	POPR	#^M<R6,R7,R8,R9,R10>	;Restore 'em.
+	MOVL	#1,KVCOD		;Set default &CODE
+;
+;	Check for /OUTPUT=...
+;
+	TSTL	SPITGO_OUTLEN		;Check for /OUTPUT=... specified
+	BEQLU	200$			;Continue if not
+	$CLOSE	FAB=FAB_SYSOUT		;Else close old channel
+	PUSHR	#^M<R2,R3,R4,R5>	;Save registers across move
+	MOVC5	SPITGO_OUTLEN,SPITGO_OUTNAM- ;Move in new name string
+		,#0,#RSA_SYSOUT-FNM_SYSOUT,FNM_SYSOUT
+	POPR	#^M<R2,R3,R4,R5>	;Restore
+	MOVB	SPITGO_OUTLEN,FAB_SYSOUT+FAB$B_FNS ;Set length
+	JSB	SET_SYSPP		;Set options (routine in SPITGO)
+	PUSHR	#^M<R6,R7,R8,R9,R10>	;Save registers across call
+	CLRL	R8			;Not TERMINAL association
+	JSB	PRPAR			;Make SPITBOL read 'em (in SPITBOL)
+	POPR	#^M<R6,R7,R8,R9,R10>	;Save registers across call
+;
+;	Merge to return
+;
+200$:	RSB				;Off we go...
+	.PAGE
+	.SBTTL	SYSDC: Date Check for Trial Versions (No-Op)
+;
+;	This module is called to perform a date check for a trial
+;	copy of Spitbol against an 'expiration date'.
+;
+;	NOTE: This module simply returns at present
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSDC
+;		(Return Iff Date Ok)
+;
+SYSDC::
+	RSB				;Legal User - Go Ahead
+	.PAGE
+	.SBTTL	SYSDM: Dump Memory (No-Op)
+;
+;	Spitbol calls this module as a result of encountering a
+;	call to DUMP(N) with N >= 3.  The intended purpose is to give
+;	a memory dump for debugging purposes.  The debugger can
+;	be linked in if desired, so this routine is a no-op.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSDM
+;
+SYSDM::
+	RSB			;Back we go.
+	.PAGE
+	.SBTTL	SYSDT: DATE() Function
+;
+;	The SYSDT Module is called from Spitbol as a result of encountering
+;	a user call to DATE().  This module returns a pseudo-scblk in the
+;	form:
+;
+;		"DD-MMM-YYYY HH:MM:SS.CC"
+;
+	WORKSECT
+;
+;	Pseudo-SCBLK for Date String
+;
+SYSDT_SCBLK:	.LONG	0
+		.LONG	0
+SYSDT_STRST:	.ASCII	"DD-MMM-YYYY HH:MM:SS.CC"
+SYSDT_STRND:	.ALIGN	LONG,0
+SYSDT_STRLN=	SYSDT_STRND-SYSDT_STRST
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSDT
+;		(XL/R10) -	Pseudo-SCBLK containing date string
+;
+SYSDT::
+	MOVL	#SYSDT_STRLN,SYSDT_SCBLK	;Set Descriptor Length
+	MOVAL	SYSDT_STRST,SYSDT_SCBLK+4	;Set Descr. Char. Ptr.
+	$ASCTIM_S  TIMBUF=SYSDT_SCBLK		;Fill In String
+	MOVL	#SYSDT_STRLN,SYSDT_SCBLK+4	;Set SCBLK Length
+	MOVAL	SYSDT_SCBLK,R10			;Point to SCBLK
+	RSB					;Back to Spitbol
+	.PAGE
+	.SBTTL	SYSEJ: End of Run Processing
+;
+;	This module is called by SPITBOL to terminate the run.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	Value of Abend Keyword
+;		(WB/R7) -	Value of Code Keyword
+;		(XL/R10) -	Ptr. to FCBLK Chain or 0 if None
+;		JSB	SYSEJ
+;		(No Return - Back to VMS)
+;
+SYSEJ::
+	MOVL	R7,R0			;Set &CODE As Return Code
+	CMPL	R0,#998			;Is This "NO SYSOUT" Error?
+	BNEQ	200$			;Branch If Not
+	MOVL	#SPITBOL_NOSYSOUT,R0	;Put real error num in R0
+	BRB	300$			;And out
+;
+;	Not 998. Perhaps 999?
+;
+200$:	CMPL	R0,#999			;Is This "EXEC. SUPP" Error?
+	BNEQ	300$			;Branch To Exit If Not
+	PUSHL	#SPITBOL_EXSUP		;Stack arg for LIB$SIGNAL
+	CALLS	#1,LIB$SIGNAL		;Note the informational message
+	MOVL	#1,R0			;Indicate success and merge
+;
+;	Merge Here To Exit With Return Code In R0
+;
+300$:	$EXIT_S	R0
+	.PAGE
+	.SBTTL	SYSEM: Get Text of Error Message
+;
+;	This module is called by the interpreter (only) to get the
+;	text of one of the error messages.  The messages are defined
+;	externally in a .MSG file.
+;
+	CONSSECT
+;
+;	Define the parameters for GETMSG options
+;
+SYSEM_TEXT	=	^X01	;Tell GETMSG to return text
+SYSEM_IDENT	=	^X02	;Tell GETMSG to return identification
+SYSEM_SEVERITY	=	^X04	;Tell GETMSG to return severity indicator
+SYSEM_COMPONENT	=	^X08	;Tell GETMSG to return component name
+SYSEM_FLAGS	=	SYSEM_TEXT
+SYSEM_MSGLEN	=	80	;Maximum error message length
+;
+	WORKSECT
+;
+;	SCBLK for returned message text
+;
+SYSEM_MSG::	.LONG	0,0
+		.BLKB	SYSEM_MSGLEN
+;
+;	Descriptor for message area
+;
+		.ALIGN	LONG
+SYSEM_MSGDESCR::.LONG	SYSEM_MSGLEN
+		.LONG	SYSEM_MSG+8
+	.PAGE
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	Message ID
+;		JSB SYSEM
+;		(XR/R9) - 	Pointer To SCBLK for Message
+;				or Null SCBLK If No Message
+;
+SYSEM::
+	CLRL	SYSEM_MSG+4		;Assume null string
+	TSTL	R6			;Check error number
+	BLSS	100$			;Null if below zero
+	CMPL	R6,#SPITBOL_MAXMSG	;Check against upper limit
+	BGTR	100$			;Null if above
+	ASHL	#3,R6,R0		;Get message offset
+	ADDL2	#SPITBOL_ERR000,R0	;Bias to first code
+	$GETMSG_S R0,SYSEM_MSG+4,-	;Get the text
+		SYSEM_MSGDESCR,#SYSEM_FLAGS,<>
+;
+;	Merge here to exit
+;
+100$:	MOVAL	SYSEM_MSG,R9		;Point to SCBLK with text
+	RSB				;Return
+	.PAGE
+	.SBTTL	SYSEX: Call LOADed Function
+	SAVESECT
+;
+;	These are scratch locations that are in the SAVE section,
+;	since LOADed functions are not preserved across an EXIT(-n)
+;
+SYSEX_ICBLK::	.LONG	0,0		;Pseudo ICBLK
+SYSEX_RCBLK::	.LONG	0,0,0,0,0	;Biggest RCBLK possible (REAL*16)
+	.PAGE
+	PROGSECT
+;	SYSEX is called to pass control to an external function
+;	previously loaded with a call to SYSLD.
+;
+;	Upon return from the function, the low bit of R0 should be
+;	1 or 0 to indicate success or failure respectively.  R1
+;	is ignored for failure returns.  For success, R1 should be
+;	a reference pointer to an object which depends on the
+;	result type declared in the call to LOAD.
+;
+;	o For strings, R1 should point to a string descriptor.  The
+;	  class/type component of the descriptor is ignored, that is,
+;	  all strings are assumed to be fixed length, and the maximum
+;	  length is 65535.
+;
+;	o For integers and reals, R1 should be a reference pointer to
+;	  the value
+;
+;	o For other types (unconverted result), R1 should point to
+;	  a standard block which has correct format including the
+;	  type word.  This is copied into dynamic by Spitbol upon
+;	  return.
+;
+;	Calling Sequence:
+;
+;		(XS/SP) -	Pointer to stacked arguments [last at 0(SP)]
+;		(XL/R10) -	Pointer to EFBLK for external function
+;		(WA/R6) -	Number of stacked arguments
+;		JSB SYSEX -	Call to executed LOADed function
+;		.LONG LOC -	Return thread for failure exit
+;		(XS/SP) -	Popped past arguments
+;		(XR/R9) -	Pointer to returned result
+;		(WC/R8) -	Destroyed (for string returns)
+;
+SYSEX::
+	CALLG	4(SP),SYSEX$		;Call appendage to call loaded function
+	BLBC	R0,SYSEX_FAIL		;Fail if status no good
+	MOVL	#EFRSL,R11		;Get index of result type in R11
+	CASEL	(R10)[R11],#0,#3	;Case on result type expected
+100$:	 .WORD	SYSEX_UNCONV-100$	;Unconverted
+	 .WORD	SYSEX_STRING-100$	;String
+	 .WORD	SYSEX_INTEGER-100$	;Integer
+	 .WORD	SYSEX_REAL-100$		;Real
+;
+;	This case is for unconverted results.  R1 points to the result
+;	block, which has to be in exactly the correct format.  We
+;	just copy R1 into R9 and merge to return.
+;
+SYSEX_UNCONV::
+	MOVL	R1,R9			;Copy result pointer
+	BRW	SYSEX_DONE		;Merge to exit
+	.PAGE
+;
+;	This case is for returning strings.  R1 points to a string
+;	descriptor.  We copy it into dynamic and set the type word.
+;	A pointer to this block is the returned value.  Note that
+;	it is possible that the garbage collector will be invoked,
+;	so the stack and XL (R10) must be 'correct'.  Beware also,
+;	WC is destroyed.
+;
+SYSEX_STRING::
+	PUSHR	#^M<R1,R6>		;Save arg count and descriptor ref.
+	MOVZWL	(R1),R6			;Get length of string
+	JSB	ALOCS			;Allocate an SCBLK
+	POPR	#^M<R1,R6>		;Restore regs
+	PUSHR	#^M<R1,R2,R3,R4,R5>	;Save registers across MOVC
+	MOVC3	R8,@4(R1),8(R9)		;Move characters into SCBLK frame
+	POPR	#^M<R1,R2,R3,R4,R5>	;Restore regs
+	BRW	SYSEX_DONE		;Exit with SCBLK ptr. in XR/R9
+;
+;	Come here to return an integer.  R1 is a reference pointer to
+;	the longword integer value to be returned.  For this we
+;	build a pseudo-ICBLK (sans type word) in local store and return
+;	a pointer to it.  SPITBOL will copy it into dynamic upon return
+;
+SYSEX_INTEGER::
+	MOVL	(R1),SYSEX_ICBLK+4	;Copy in integer value
+	MOVAL	SYSEX_ICBLK,R9		;Point result at it
+	BRB	SYSEX_DONE		;Merge to exit
+;
+;	Here to return a real.  The strategy is the same as for an integer,
+;	however a MOVC is done so that these routines can be independent
+;	of the length of real numbers.
+;
+SYSEX_REAL::
+	PUSHR	#^M<R1,R2,R3,R4,R5>	;Save registers across MOVC
+	MOVC3	#4*CFP$R,(R1)-		;Copy in the real
+		,SYSEX_RCBLK+4
+	POPR	#^M<R1,R2,R3,R4,R5>	;Restore regs.
+	MOVAL	SYSEX_RCBLK,R9		;Point to it
+;
+;	Merge here with result pointer in R9 to return to interpreter.
+;
+SYSEX_DONE::
+	MOVL	(SP)+,R11		;Hang on to return vector
+	MOVAL	(SP)[R6],SP		;Pop off passed argument junk
+	JMP	4(R11)			;Return (past error thread)
+;
+;	Here for failure exit.
+;
+SYSEX_FAIL::
+	MOVL	(SP)+,R11		;Get return vector in scratch reg
+	MOVAL	(SP)[R6],SP		;Pop off passed argument junk
+	JMP	@(R11)			;Jump through failure thread.
+	.PAGE
+	.SBTTL	SYSEX$: Setup and CALL External Function
+;
+;	This routine creates an environment for calling the external
+;	function.  This involves several duties.
+;
+;	First the stack is built for the external function.  This involves two
+;	distinct passes.  During pass 1, the actual values are stuffed
+;	on the stack.  Integers and reals are copied from their
+;	respective blocks, and strings have a descriptor built.
+;	Other objects (if they can get through) are simply pointed to
+;	directly by a reference pointer during pass 2, so no value
+;	is stacked for them during pass 1.
+;	During pass 2, references to these values are stacked;
+;	these form the actual arguments passed to the procedure.
+;	Note that integers and reals are protected, string contents
+;	and other objects are not.
+;
+;	After building the stack, the SYSEX$_EXCEP condition handler
+;	is inserted in the call frame to catch any no-nos not handled
+;	by the external image.  (Recovery is attempted by forcing
+;	function failure.)
+;
+;	Then the image is called.  After it returns, SYSEX$ returns
+;	to SYSEX where the returned value and success/failure is
+;	handled.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	Argument count to function
+;		CALLS	R6,SYSEX$
+;		(R0) -		Low bit set/clear to indicate success/failure
+;		(R1) -		Points to object returned if success
+;
+SYSEX$::.WORD	^M<R2,R3,R4,R5,R6,R7,R8,R9,R10>
+	.PAGE
+;
+;	Pass 1 - Build values on stack
+;
+;	R0  - Pointer to current entry argument block
+;	R1  - Saved SP at start of pass 1 - for pass 2 (not changed)
+;	R11 - Argument/loop counter
+;	SP  - Pointer to current stacked value
+;	AP  - Entry stack pointer (not changed)
+;
+	MOVL	SP,R1			;Save start of values for pass 2
+	MOVL	#-1,R11			;Initialize loop count
+;
+;	Loop here to stack entry arg. values
+;
+50$:	AOBLSS	R6,R11,60$		;Bump loop counter and test
+	BRW	400$			;Branch - loop finished
+;
+;	Here to continue pass 1 loop for another iteration
+;
+60$:	MOVL	(AP)[R11],R0		;Get pointer to block
+	CMPL	(R0),#B$ICL		;Check for integer
+	BNEQU	100$			;Try another type if not
+	MOVL	4(R0),-(SP)		;Stack block value
+	BRW	300$			;Merge to loop
+;
+;	Not integer - try real number type
+;
+100$:	CMPL	(R0),#B$RCL		;Is it real number?
+	BNEQU	200$			;Try another type if not
+	SUBL2	#4*CFP$R,SP		;Give room for number
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>	;Hold registers across MOVC
+	MOVC3	#4*CFP$R,4(R0),24(SP)	;Move in number (works for any type)
+	POPR	#^M<R0,R1,R2,R3,R4,R5>	;Restore regs.
+	BRW	300$			;Merge to loop
+;
+;	Not real - try string
+;
+200$:	CMPL	(R0),#B$SCL		;Is it string?
+	BNEQU	300$			;Branch if not (ignore it)
+	MOVAL	8(R0),-(SP)		;Push address part of descriptor
+	MOVL	4(R0),-(SP)		;Push length part
+;
+;	Merge here to continue loop
+;
+300$:	BRW	50$			;Branch back for another shot
+	.PAGE
+;
+;	Here when entry argument pass 1 complete.  Stack the argument
+;	count and current stack pointer, and then fix the pointers for
+;	pass 2.
+;
+;
+;	R0  - Pointer to current block under consideration.
+;	R1  - Pointer to current value (stacked in pass 1)
+;	R11 - Loop index
+;	SP  - Pointer to stacked reference pointer
+;	AP  - Entry stack pointer (not changed)
+;
+400$:	MOVL	#-1,R11			;Initialize loop count
+;
+;	Loop here to stack entry arg. values
+;
+450$:	AOBLSS	R6,R11,460$		;Bump loop counter and test
+	BRW	1000$			;Branch - loop finished
+;
+;	Here to continue pass 2 loop for another iteration
+;
+460$:	MOVL	(AP)[R11],R0		;Get pointer to block
+	CMPL	(R0),#B$ICL		;Check for integer
+	BNEQU	500$			;Try another type if not
+	SUBL2	#4,R1			;Point to start of integer value
+	BRB	700$			;Merge to loop
+;
+;	Not integer - try real number type
+;
+500$:	CMPL	(R0),#B$RCL		;Is it real number?
+	BNEQU	600$			;Try another type if not
+	SUBL2	#4*CFP$R,R1		;Point to start of value
+	BRB	700$			;Merge to loop
+;
+;	Not real - try string
+;
+600$:	CMPL	(R0),#B$SCL		;Is it string?
+	BNEQU	800$			;Branch if not
+	SUBL2	#8,R1			;Point to descriptor start
+;
+;	Merge here to stuff reference pointer to standard object.
+;
+700$:	MOVAL	(R1),-(SP)		;Stuff reference pointer
+	BRB	900$			;Branch to continue loop
+;
+;	Here when we have something other than standard number/string.
+;	Just stuff a reference pointer directly to it.
+;
+800$:	MOVAL	(R0),-(SP)		;Stuff pointer
+;
+;	Merge here to continue pass 2 loop
+;
+900$:	BRW	450$			;Jump to continue loop
+	.PAGE
+;
+;	Here when pass 2 finished.  Get entry point and call function
+;
+1000$:	MOVL	@4*EFCOD(R10),R0	;Point to image header data
+	MOVZWL	IHD$W_ACTIVOFF(R0),R1	;Offset to activation vectors
+	MOVAB	IHA$L_TFRADR1(R0)[R1],R1;Address of transfer vectors
+	MOVL	(R1),R0			;Try the first vector
+	BGTR	1100$			;Got it if not in sysspace
+	MOVL	4(R1),R0		;Else try the second
+	BGTR	1100$			;Good if not in system space
+	MOVL	8(R1),R0		;Else use the third
+;
+;	Here when transfer address in R0 to call routine
+;	Routine should return with status in R0 and value ptr. in R1 (if
+;	low bit of R0 set).
+;
+1100$:	MOVAL	SYSEX$_EXCEP,(FP)	;Set cond. handler to catch returns
+	CALLS	R6,(R0)			;Call it
+	BLBC	R0,1200$		;No access check if failed
+	TSTL	(R1)			;Else force exception if given crud
+;
+;	Merge here to return when we are reasonably certain that R1 is OK
+;
+1200$:	RET				;Return to finish up.
+	.PAGE
+	.SBTTL	SYSEX$_EXCEP:	Condition Handler for External Functions
+;
+;	The following code is a condition handler established prior to
+;	entering a loaded function.  It's primary purpose is to
+;	catch unexpected (unhandled) conditions from the loaded function,
+;	and attempt to recover by simulating a failure
+;	
+;	In all cases, an unwind is performed to get back to SYSLD.
+;
+SYSEX$_EXCEP::.WORD	0
+	MOVL	4(AP),R0		;Get address of signal arg. vector
+	CMPL	4(R0),#SS$_UNWIND	;Are we unwinding through?
+	BNEQ	50$			;Press on if not
+	MOVL	#SS$_RESIGNAL,R0	;Else allow unwind to continue
+	RET				;...and return
+;
+;	Here if not unwinding
+;
+50$:	SUBL3	#2,@4(AP),R1		;Get number of args to stack
+	MOVL	R1,R0			;Save it
+;
+;	Loop here to push all the signal argument vector stuff we are
+;	given back on to the stack for this LIB$SIGNAL (re-)call
+;
+60$:	PUSHL	@4(AP)[R1]		;Push next argument in vector
+	SOBGTR	R1,60$			;Move up in vector and do again
+	SUBL3	#1,@4(AP),R1		;Get saved PC arg. vector ptr. index
+	CLRL	-(SP)			;No FAO args
+	PUSHL	#SPITBOL_LOADUNEXTRY	;Set message to signal
+	PUSHL	@4(AP)[R1]		;Indicate PC at failure
+	PUSHL	#1			;One FAO arg.
+	PUSHL	#SPITBOL_LOADUNEXCOND	;Give unexpected condition noise
+	ADDL2	#5,R0			;Add in fixed argument count
+	CALLS	R0,LIB$SIGNAL		;Signal it
+	MOVL	#CHF$L_MCH_SAVR0/4,R0	;Get index of saved R0 in mech. vec.
+	CLRL	@8(AP)[R0]		;Set saved R0 to indicate failure
+	$UNWIND_S			;Unwind back to SYSEX
+	RET				;BACK!
+	.PAGE
+	.SBTTL	SYSHS: HOST() Function
+;
+;	This module is called when Spitbol encounters a call to HOST(a,b,c).
+;	The single standarized entry is when all three arguments are null.
+;	In this case, HOST() returns a string of the form:
+;
+;	VAX:VMS:sitename-from-sysid:username:[accountname]
+;
+;	At present, no other entries are defined, and will cause errors.
+;
+	WORKSECT
+;
+;	Request Area For JPI Get Username
+;
+SYSHS_JPUNM:	.WORD	12		;Max. Return Length
+		.WORD	JPI$_USERNAME	;Request Username Code
+		.LONG	0		;Buffer Address - Filled In Later
+		.LONG	SYSHS_UNMLN	;Return Length Count There
+		.LONG	0		;End Of Request List
+;
+;	Request Area For JPI Get Account Name
+;
+SYSHS_JPANM:	.WORD	8		;Max. Return Length
+		.WORD	JPI$_ACCOUNT	;Request Accountname Code
+		.LONG	0		;Buffer Address - Filled In Later
+		.LONG	SYSHS_ANMLN	;No Return Length Count
+		.LONG	0		;End Of Request List
+;
+;	SCBLK Skeleton To Be Returned For Null Args Entry
+;
+SYSHS_SCBLK:	.LONG	0		;Dummy Type
+		.LONG	0		;Length (Filled In Later)
+		.BLKB	128		;SCBLK Data (Filled In Dynamically)
+;
+;	Return areas for GETJPI calls
+;
+SYSHS_UNMLN:	.LONG	0		;# Characters in Username (From JPI)
+SYSHS_ANMLN:	.LONG	0		;Length Of Account Name String
+	.PAGE
+;
+;	Calling Sequence:
+;
+;		(WA/R6) -	Argument a
+;		(XL/R10) -	Argument b
+;		(XR/R9) -	Argument c
+;		JSB	SYSHS
+;		.LONG	Erroneous Args
+;		.LONG	Execution Error
+;		.LONG	SCBLK Pointer in XL or 0 if not available
+;		.LONG	Return Nullstring
+;		.LONG	Return Result in XR
+;		.LONG	Cause Statement Failure
+;
+SYSHS::
+	CMPL	R6,#NULLS		;Check For Arg 1 Null
+	BEQL	100$			;Branch If So
+	BRW	1000$			;Else Try Special Operation
+;
+;	Here When First Arg Known Null
+;
+100$:	CMPL	R10,#NULLS		;Check For Arg 2 Null
+	BEQL	200$			;Branch If So
+	BRW	9999$			;Error If 1st Arg Null and 2nd Not
+;
+;	Here When 1st and 2nd Args Known Null
+;
+200$:	CMPL	R9,#NULLS		;Check For Arg 3 Null
+	BEQL	300$			;Branch If So
+	BRW	9999$			;Error If 1st & 2nd Args Null & 3rd Not
+;
+;	Here When All Three Args Null.
+;
+300$:	PUSHR	#^M<R9,R10>		;Save Regs across call
+	JSB	SYSID			;Make sure SYSID has been called
+	POPR	#^M<R9,R10>		;Ignore returns
+	PUSHR	#^M<R2,R3,R4,R5>	;Save Registers Across MOVs
+	MOVAL	SYSHS_SCBLK+8,R3	;Point To Start Of Data Area
+	MOVC3	#SYSID$K_CPIDN,-	;Move In Machine ID
+		SYSID_CPIDN,(R3)
+	MOVB	#^A":",(R3)+		;Move In ":"
+	MOVC3	#SYSID$K_OSIDN,-	;Move In Operating System ID
+		SYSID_OSIDN,(R3)
+	MOVB	#^A":",(R3)+		;Move In ":"
+	MOVC3	#SYSID$K_SITEID,-	;Move In Site Ident
+		SYSID_SITEID,(R3)
+	MOVB	#^A":",(R3)+		;Move In ":"
+	MOVL	R3,SYSHS_JPUNM+4	;Set Place For Username String Return
+	$GETJPI_S  ITMLST=SYSHS_JPUNM	;Move In Username Str. (.LE. 12 Chars)
+	ADDL2	SYSHS_UNMLN,R3		;Point Past It
+;
+;	Loop Here To Back Over Trailing Blanks In Username String
+;
+400$:	CMPB	-(R3),#^A" "		;Is Preceeding Char A Blank?
+	BEQLU	400$			;Yes. Continue Backwards Loop.
+	INCL	R3			;Space Over Good Character
+	MOVB	#^A":",(R3)+		;Close Off Username String
+	MOVL	R3,SYSHS_JPANM+4	;Set Account Name Pointer
+	$GETJPI_S  ITMLST=SYSHS_JPANM	;Request String
+	ADDL2	SYSHS_ANMLN,R3		;Point Past It
+;
+;	Loop Here To Trim Blanks From Account Name
+;
+500$:	CMPB	#^A" ",-(R3)		;Check Previous Character For Blank
+	BEQLU	500$			;Loop If A Blank
+	INCL	R3			;Point Past It
+	CLRL	(R3)			;Make Sure SCBLK is zero padded
+	SUBL3	#SYSHS_SCBLK+8,R3,-	;Stuff Actual Length In SCBLK
+		SYSHS_SCBLK+4
+	POPR	#^M<R2,R3,R4,R5>	;Restore Saved Registers
+	MOVAL	SYSHS_SCBLK,R10		;Point XL At SCBLK
+	BRW	9997$			;Exit With Result In XL
+	.PAGE
+;
+;	Here If Arg1 Not Null.  At Present, There Are No Such Defined
+;	Entries, So SYSHS Registers An Argument Error Here.
+;
+1000$:	BRW	9999$			;Exit Signalling Arg. Error
+;
+;	Here For Statement Failure Exit
+;
+9994$:	ADDL2	#4,(SP)			;Bias To Next Return Thread
+;
+;	Here For Return Result In XR
+;
+9995$:	ADDL2	#4,(SP)			;Bias To Next Return Thread
+;
+;	Here For Return Null
+;
+9996$:	ADDL2	#4,(SP)			;Bias To Next Return Thread
+;
+;	Here For SCBLK Pointer In XL
+;
+9997$:	ADDL2	#4,(SP)			;Bias To Next Return Thread
+;
+;	Here For Execution Error
+;
+9998$:	ADDL2	#4,(SP)			;Bias To Next Return Thread
+;
+;	Here For Erroneous Argument Error
+;
+9999$:	MOVL	(SP)+,R11		;Get Return Thread Pointer From Stack
+	JMP	@(R11)+			;Jump Through It
+	.PAGE
+	.SBTTL	SYSID: Return ID Titles
+;
+;	This module returns two header SCBLKS to Spitbol.  The first is
+;	appended by SPITBOL to the basic header line, and the second is
+;	used as the second header line.  For a site-id, the VMS logical
+;	name SYS$SITENAME is translated and if it is defined, the text
+;	is used.
+;
+	CONSSECT
+;
+;	$ASCTIM String Descriptor
+;
+DATIM_DESCR:	.LONG	SYSID$K_DATIM		;Field Length
+		.LONG	SYSID_DATIM		;String Data Address
+;
+;	Sitename Descriptors
+;
+SYSID_SITESYM::	.ASCID	/SYS$SITENAME/		;Logical name w/ site id
+		.ALIGN	LONG,0
+SYSID_SITEDESCR::.LONG	SYSID$K_SITEID		;Descriptor for $TRNLOG
+		.LONG	SYSID_SITEID
+	.PAGE
+	WORKSECT
+;
+;	Return length of sitename string from TRNLOG
+;
+SYSID_SITELEN::	.LONG	0			;Length of translated string
+;
+;	Template for SCBLK #1
+;
+SYSID_SCBLK1::	.LONG	0			;SCBLK Pointer need not be set
+		.LONG	SCB1_END-<SYSID_SCBLK1+8>  ;SCBLK Length Need Be.
+SYSID_VERSN::	.ASCII	"(vvvv-mmmm) "		;Major/Minor version data
+SYSID_DATIM::	.ASCII	"dd-mmm-yyyy hh:mm" 	;Filled in by $ASCTIM above.
+SYSID$K_DATIM==.-SYSID_DATIM
+SCB1_END:	.ALIGN	LONG,0			;Pad out SCBLK
+;
+;	Template for SCBLK #2
+;
+SYSID_SCBLK2::	.LONG	0			;SCBLK Pointer set by SPITBOL
+		.LONG	SCB2_END-<SYSID_SCBLK2+8>  ;Length for SCBLK #2
+SYSID_CPIDN::	.ASCII	"VAX"			;Machine ID
+SYSID$K_CPIDN==.-SYSID_CPIDN
+		.ASCII	" - "
+SYSID_OSIDN::	.ASCII	"VMS"			;Operating System
+SYSID$K_OSIDN==.-SYSID_OSIDN
+		.ASCII	"  "
+SYSID_SITEID::	.ASCII	"* SYS$SITENAME? *"	;Site Name
+		.BYTE	^A" "[28-<.-SYSID_SITEID>]	;Max is 28 Chars.
+SYSID$K_SITEID==.-SYSID_SITEID
+		.ASCII	"  "
+SYSID_FILID::	.BYTE	^A" "[40]		;Input File - Set in SPITGO
+SYSID$K_FILID==.-SYSID_FILID
+SCB2_END:	.ALIGN	LONG,0			;Pad out SCBLK
+	.PAGE
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB		SYSID
+;		(XR/R9) -	Pointer to 1st SCBLK
+;		(XL/R10) -	Pointer to 2nd SCBLK
+;
+SYSID::
+	$ASCTIM_S  TIMBUF=DATIM_DESCR	;Fill in date and time data
+	JSB	SYSIDENT		;Get version data
+	MOVL	R0,SYSID_VERSN+1	;Stuff it
+	MOVL	R1,SYSID_VERSN+6	;Stuff minor version too
+	PUSHR	#^M<R2,R3,R4,R5>	;Don't Lose Registers
+	MOVZBL	NAM_SYSIN+NAM$B_RSL,R2	;Get Length Of Result Name String
+	MOVC5	R2,RSA_SYSIN,#^A" ",#SYSID$K_FILID,SYSID_FILID
+	$TRNLOG_S LOGNAM=SYSID_SITESYM- ;Try to get translation of site
+		,RSLBUF=SYSID_SITEDESCR,RSLLEN=SYSID_SITELEN
+	BLBC	R0,100$			;Do nothing if it didn't work
+	MOVL	SYSID_SITELEN,R3	;Get returned length
+	SUBL3	R3,#SYSID$K_SITEID,R2	;Compute length to pad
+	MOVC5	#0,0,#^A" ",R2-		;Blank out rest of site name
+		,L^SYSID_SITEID(R3)
+;
+;	Here after sitename set.
+;
+100$:	POPR	#^M<R2,R3,R4,R5>
+	MOVAB	SYSID_SCBLK1,R9		;Point to first SCBLK
+	MOVAB	SYSID_SCBLK2,R10	;Point to second SCBLK
+	RSB				;Hi-Ho Hi-Ho its off to compile we go.
+	.PAGE
+	.SBTTL	SYSIDENT: Return system version data
+;
+;	This routine returns two four character (printable) strings in
+;	R0 & R1.  The characters (low to high) represent the version level
+;	of the four principal components of the system - SPITGO, SPITSYS,
+;	SPITIOSYS and SPITBOL.  R0 contains the major id values,
+;	R1 contains the minor ids.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB SYSIDENT	Call to get ident longwords
+;		(R0)		Major id's
+;		(R1)		Minor id's
+;
+SYSIDENT::
+	MOVL	#<<<IDENT_SPITBOL@8>!IDENT_SPITIOSYS>@8!-
+		IDENT_SPITSYS>@8!IDENT_SPITGO,R0
+	MOVL	#<<<MINOR_SPITBOL@8>!MINOR_SPITIOSYS>@8!-
+		MINOR_SPITSYS>@8!MINOR_SPITGO,R1
+	RSB				;Back we go
+	.PAGE
+	.SBTTL	SYSINV: Handle INVALID Return
+;
+;	As part of the definition of Minimal, it is allowable to omit
+;	a label destination on a PPM (JSR Exit Address Parameter) if
+;	the Minimal subroutine could never take that return in the context
+;	where it is called.  The translation to MACRO-32 inserts the
+;	label INVALID$ as the destination, which is this module.  It is
+;	natural to assume that this code would never be executed, but
+;	if it is entered, it calls the error section with WA (The error
+;	code) set to zero.  This indicates an unplesant system error.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JMP INVALID$	Can't happen
+;
+SYSINV::				;Dummy label
+INVALID$::
+	CLRL	R6			;Error Code is >>ZERO!<<
+	JMP	ERROR$			;To the Error Routine
+	.PAGE
+	.SBTTL	SYSLD: Load External Function
+;
+;	SYSLD is called in response to a LOAD(...) call in the interpreter.
+;	It dynamically loads a linked image in the next available
+;	low memory page.  A page for the image description is allocated
+;	first to give the image activator a place to tell us about
+;	the image.  Then the image activator is called to "P0MERGE" the
+;	image into ours.  Note that few checks are made, specifically,
+;	no checks are made to insure that we are not overmapping
+;	something important (like the interpreter).
+;
+;	The image must be complete (that is, have a defined xfer
+;	address), so that SYSEX can get into it.  The call interface
+;	is documented in SYSEX.
+;
+;	Code which is loaded should be PIC, and contain no self-referencing
+;	absolute addresses (as might be allowed when linking a sharable
+;	library).  If this is not done, then a precise determination
+;	of the load address is possible, in which event the above can
+;	be safely disregarded.  This does, however, make LOADed functions
+;	sensitive to the order of LOADing. (See SYSLD_BASE below).
+;
+;	One particular caution is to avoid inadvertently linking the
+;	VMS RTL into low address space.  To prevent this, link the
+;	image against SPITBOL's symbol table, which already contains
+;	the RTL.
+;
+;	The second argument (library name) is used as the name of the image
+;	to merge in.  The defaults are as usual with a default type of .EXE.
+	.PAGE
+	SAVESECT
+;
+;	SYSLD_BASE is the first available address for LOADing.  It is
+;	maintained as new code is loaded to reflect the new base of
+;	available space.  LOAD_BASE is defined at link time; the
+;	purpose for it is to leave room for the VMS Run-Time Sharable
+;	image section which positions itself at %X200 (despite all
+;	attempts to persuade it otherwise.)
+;
+SYSLD_BASE::		.LONG	LOAD_BASE
+;
+;	DEFDESCR contains the default descriptor area for the image activator.
+;	The only specified default is the type (.EXE).  Note well that a zero
+;	length default string will cause an inexplicable access violation.
+;
+SYSLD_DEFDESCR::	.ASCID	/.EXE/
+			.ALIGN	LONG,0
+;
+;	FILEDESCR is where the descriptor for the LOAD library (file) name is
+;	placed.
+;
+SYSLD_FILEDESCR::	.LONG	0,0
+;
+;	This is a descriptor that creates the header buffer for the activator.
+;	The activator places the image header and activation data in
+;	the buffer thus created.  The first three longwords point
+;	respectively to the address in this buffer of the image header,
+;	the image file descriptor and the address of the FAB for most 
+;	recent open (zero if no FAB available).
+;
+SYSLD_HDRDESCR::	.LONG	0,0
+;
+;	This is used to pass the available virtual range for the image to
+;	be loaded to the activator.
+;
+SYSLD_MAPADR::		.LONG	0,^X1FFFFFFF
+;
+;	The image bounds are returned here by the activator
+;
+SYSLD_RETADR::		.QUAD	0
+	.PAGE
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(XR/R9) -	SCBLK for function name
+;		(XL/R10) -	SCBLK for library name
+;		JSB SYSLD -	Call to load external function
+;		.LONG loc -	Non-existant image error thread
+;		.LONG loc -	I/O error on load (or virtual space problem)
+;		(XR/R9) -	Pointer to image description page base
+;
+SYSLD::
+	MOVL	SYSLD_BASE,SYSLD_HDRDESCR ;Set first address to map
+	ADDL3	SYSLD_HDRDESCR,#511-	;Want to map one page
+		,SYSLD_HDRDESCR+4
+	$CRETVA_S INADR=SYSLD_HDRDESCR	;Map in the page
+	BLBS	R0,50$			;Branch on error
+	BRW	70$
+50$:	MOVL	4(R10),SYSLD_FILEDESCR	;Get filename length into descriptor
+	MOVAL	8(R10),SYSLD_FILEDESCR+4 ;Get addr too
+	ADDL3	SYSLD_BASE,#512,SYSLD_MAPADR	;Set base address of image
+	DECL	SYSLD_MAPADR+4		;Decrement for inclusive address
+	$IMGACT_S NAME=SYSLD_FILEDESCR-	;Load it
+		,DFLNAM=SYSLD_DEFDESCR-		;Default name
+		,IMGCTL=#IAC$M_MERGE-		;Merge into P0 at given addr
+		,INADR=SYSLD_MAPADR-		;Specify input range
+		,RETADR=SYSLD_RETADR-		;Address range return quadword
+		,HDRBUF=@SYSLD_BASE		;Address of header work buffer
+	BLBS	R0,100$			;Go on if OK
+	CMPL	#RMS$_FNF,R0		;See if file not found error
+	BNEQU	70$			;Branch if not
+	MOVL	(SP)+,R11		;Return error threads
+	JMP	@(R11)			;Jump through first (no such file)
+;
+;	Here for "I/O ERROR" on LOAD(...)
+;
+70$:	MOVL	(SP)+,R11		;Get return threads pointer
+	JMP	@4(R11)			;Jump through it
+;
+;	Here when image load-merge worked OK
+;
+100$:	MOVL	SYSLD_BASE,R9		;Point to hdrbuffer page
+	ADDL3	#1,SYSLD_RETADR+4,SYSLD_BASE ;Set new LOAD base
+	ADDL2	#8,(SP)			;Bias past error threads
+	JMP	@(SP)+			;Back to interpreter
+	.PAGE
+	.SBTTL	SYSMM: Get More Memory
+;
+;	This module is invoked by SPITBOL whenever it needs more
+;	memory to keep going.  The current version of SPITBOL always
+;	tries garbage collecting before calling on SYSMM, so we
+;	reciprocate by always tossing in another few pages when we are
+;	called (otherwise the program will terminate, and that's no good).
+;	The number of pages to request is determined by SYSMM_PGING,
+;	which is set at startup by SPITGO.
+;
+;	Note that Spitbol's Dynamic Region must be contiguous.  This means
+;	that the SPITBOL task should be built with the IOSEGMENT=...NOP0BUFS
+;	so that RMS can't get its sticky fingers into our wicket.  If it
+;	(or somebody else) manages to do so, this routine will not be
+;	able to provide any additional space.
+;
+	WORKSECT
+;
+;	Region Limits Descriptor Returned by $EXPREG
+;
+SYSMM_MEMST::	.LONG	0		;Starting Address of Memory Obtained
+SYSMM_MEMND::	.LONG	0		;Ending Address of Memory Obtained
+;
+	SAVESECT
+;
+;	Page Increment for SYSMM
+;
+SYSMM_PGINC::	.LONG	0		;Set At Startup Time
+	.PAGE
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSMM
+;		(XR/R9) -	Amount of memory obtained (128 Lwds/crack)
+;
+SYSMM::
+	TSTL	SYSMM_PGINC		;Check Value of Increment
+	BLEQ	50$			;Forget it if <= zero Pages
+;
+;	Fall Through to Call System Service to Expand Region in P0
+;
+	$EXPREG_S  PAGCNT=SYSMM_PGINC,RETADR=SYSMM_MEMST ;Just a little more P0
+	BLBS	R0,100$			;Looks Good If Low Bit Set
+;
+;	Here If We Cannot Provide Any More Memory
+;
+50$:	CLRL	R9			;Can't Give You Any
+	BRB	200$			;Branch to Exit Empty-Handed
+;
+;	Here when we have a New Page in P0.  Check Contiguity.
+;
+100$:	MOVL	DYNAM_END,R0		;Get old Ending Limit
+	INCL	R0			;+1 Should be New Start
+	CMPL	R0,SYSMM_MEMST		;Is It?
+	BNEQU	50$			;If Not, Then No-Go
+;
+;	Update Interal Bookkeeping
+;
+	MOVL	SYSMM_MEMND,DYNAM_END	;Set New End-P0 Pointer
+;
+;	Set Number of Longwords retrieved
+;
+	SUBL3	SYSMM_MEMST,SYSMM_MEMND,R9	;Get Region Size (Minus 1)
+	INCL	R9			;Add one to get length
+	ASHL	#-2,R9,R9		;Convert to longwords
+	ASHL	#-7,R9,R11		;Get # Pages Actually Added
+	ADDL2	R11,DYNAM_PAGES		;Update Page Count
+;
+;	Merge here with return (Long)Word Count in R9
+;
+200$:	RSB				;Back.
+	.PAGE
+	.SBTTL	SYSMX: Provide Value for MXLEN
+;
+;	Spitbol calls this module to get a minimum value for MXLEN,
+;	which in turn sets the initial value of &MAXLNGTH.  As this
+;	function can be effectively performed more efficiently by
+;	a mapping into the virtual space (SPITGO), this module just
+;	defaults by returning zero.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSMX
+;		(WA/R6) -	MXLEN or Zero For Default
+;
+SYSMX::
+	CLRL	R6		;Set for Default
+	RSB			;Back we go.
+	.PAGE
+	.SBTTL	SYSPP: Get Print Parameters
+;
+;	This module just loads up the values computed in SPITGO and
+;	hands them back to SPITBOL - see SPITGO module SET_OPTIONS
+;	for details.
+;
+	SAVESECT
+;
+;	Option Words - Value Bound in SPITGO
+;
+SYSPP_PLL::	.LONG	0	;Print Line Length
+SYSPP_LPP::	.LONG	0	;Lines/Page
+SYSPP_OPT::	.LONG	0	;Option Bits
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSPP
+;		(WA) -	Print Line Length
+;		(WB) -	Lines Per Page
+;		(WC) -	Option Bits (see SPITGO)
+;
+SYSPP::
+	MOVL	SYSPP_PLL,R6		;Load Print Line Length into WA
+	MOVL	SYSPP_LPP,R7		;Load Lines/Page in WB
+	MCOML	#<OPT_SBL@1>-1,R0	;Get mask of bits to clear out
+	BICL3	R0,SYSPP_OPT,R8		;Get SPITBOL's bits
+	RSB				;Back!
+	.PAGE
+	.SBTTL	SYSTM: Provide CPU Time
+;
+;	This module returns the number of elapsed CPU Milliseconds
+;	to SPITBOL each time it is called.
+;
+	CONSSECT
+;
+;	$GETJPI Parameter List
+;
+SYSTM_JPI:	.WORD	4		;Longword length for CPU Time
+		.WORD	JPI$_CPUTIM	;Item Code for JPI
+		.LONG	SYSTM_CPTIM	;Address Where Info Placed
+		.LONG	0		;Don't mess with Returned Length
+		.LONG	0		;End-Of-List
+;
+	WORKSECT
+;
+;	CPU Time Data
+;
+SYSTM_CPTIM::	.LONG	0		;CPU Time (10Ms Tick) Filled in by JPI
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB		SYSTM
+;		(IA/R5) -	CPU Time in Milliseconds
+;
+SYSTM::
+	$GETJPI_S  ITMLST=SYSTM_JPI	;Use JPI to get CPU Time Ticks
+	MULL3	#10,SYSTM_CPTIM,R5	;Convert to Milliseconds in IA
+	RSB				;And Back We Go-o-o-o-o!
+	.PAGE
+	.SBTTL	SYSTT: Trace Toggle (No-Op)
+;
+;	Spitbol calls this module as a result of encountering a
+;	call to TRACE() with all null arguments.  Its supposed
+;	use is to permit the tracing of labels in the code to be
+;	turned on and off.  The debugger, when linked in, is better
+;	for this, since all the labels are global, so this routine
+;	simply returns (although it might be better to signal an
+;	error).
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JSB	SYSTT
+;
+SYSTT::
+	RSB			;Back we go.
+	.PAGE
+;
+;	SYSUL is called in response to an interpreter UNLOAD(...)
+;	function call.  Nothing needs to be done (the pages stay
+;	mapped, but unreferencable), so this is just a null routine.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(XR/R9) -	Pointer to EFBLK for external function
+;		JSB SYSUL -	Call to unload
+;
+SYSUL::
+	RSB				;Nothing to it
+	.PAGE
+	.SBTTL	SYSXI: EXIT() Function
+;
+;	When SYSXI is called, XL/R10 contains either a string pointer
+;	or zero. In the former case, the string gives the
+;	character name of a DCL command.
+;	SPITBOL execution is terminated forthwith and
+;	the command executed.
+;	if (R10) is zero, IA/R5 contains one of the following integers
+;
+;	-1, -2, -3
+;	     Create if possible an exit module containing only the
+;	     impure area of memory which needs to be loaded with
+;	     a compatible pure segment for subsequent executions.
+;	     version numbers to check compatibility should be
+;	     kept in both segments and checked on loading.
+;	     to assist with this check, (XR/R9) on entry is a
+;	     pointer to an SCBLK containing the SPITBOL major
+;	     version number v.v (see SYSID).
+;
+;	0    Return control to job control command level.
+;
+;	+1, +2, +3
+;	     create an exit module from all of
+;	     memory.  This form of EXIT is not supported by the
+;	     VAX/VMS version.
+;
+;	In the case of saved exit modules, the status of open
+;	files is not preserved, with the exception of standard
+;	input and output files which are always set up on every
+;	SPITBOL execution (including LOADs).
+;	if SPITBOL attempts to write to the standard output file and gets a
+;	reply indicating that such output is unacceptable it stops
+;	by using an entry to SYSEJ with ending code 998.
+;	As described below, passing of some arguments makes it
+;	clear that an exit module will use a standard output file.
+;
+;	Loading and running the exit module or returning from
+;	DCL command level causes execution to resume at the point
+;	after the error returns which follow the call of SYSXI.
+;	the value passed as exit argument is used to indicate
+;	options required on resumption of exit module.
+;	+1 or -1 require that on resumption, SYSID and SYSPP be
+;	called and a heading printed on the standard output file.
+;	+2 or -2 indicate that SYSPP will be called but not SYSID
+;	and no heading will be put on standard output file.
+;	Above options have the obvious implication that a
+;	standard o/p file must be provided for the exit module.
+;	+3 or -3 indicate calls of neither SYSID nor SYSPP
+;	and no heading will be placed on standard output file.
+;	No return from SYSXI occurs with a string argument.
+	.PAGE
+	CONSSECT
+;
+;	This macro is used to call SYSXI_BWRITE for writing
+;
+	.MACRO	XIWRITE	START,LENG,VBN
+	PUSHAB	START			;Arg3 is start address
+	PUSHL	LENG			;Arg2 is transfer length
+	PUSHL	VBN			;Arg1 is starting VBN in file
+	CALLS	#3,SYSXI_BWRITE		;Write the data
+	BLBC	R0,SYSXI_SAVEDONE	;Error branch
+	.ENDM
+;
+;	This macro is used to call SYSXI_BREAD to map in a section
+;
+	.MACRO	XIREAD	START,LENG,VBN
+	PUSHAB	START			;Arg3 is start address
+	PUSHL	LENG			;Arg2 is transfer length
+	PUSHL	VBN			;Arg1 is starting VBN in file
+	CALLS	#3,SYSXI_BREAD		;Map the section
+	.ENDM
+;
+;	Here we create the symbols that bracket the various PSECTS.
+;	This is a bit tricky, and relies on the alphabetizing of
+;	the linker regarding PSECTS with identical attributes, and
+;	requires some link options to force alignments.
+;
+	CONSSECT	CONSSECS
+CONS_START::				;Start of constant store
+	CONSSECT	CONSSECT$
+CONS_END::				;End of constant store
+;
+	PROGSECT	PROGSECS
+PROG_START::				;Start of program code
+	PROGSECT	PROGSECT$
+PROG_END::				;End of program code
+;
+	WORKSECT	WORKSECS
+WORK_START::				;Start of working store
+	WORKSECT	WORKSECT$
+WORK_END::				;End of working store
+	.PAGE
+	CONSSECT
+;
+;	The format of a (minus EXIT arg) exit module is a one block
+;	header followed by variable numbers of blocks for Working Store
+;	(WORKSECT), Spitbol Store (DNAMB..DNAMP), and the Stack
+;	(STACK_BASE..SP).  These symbols define the offsets in the
+;	exit file header.
+;
+XI$L_IDENT==	0		;Version longword
+XI$L_MINOR==	XI$L_IDENT+4	;Minor version longword
+XI$L_SPITID==	XI$L_MINOR+4	;First 4 chars. of Spitbol "V.V" string
+XI$L_TYPE==	XI$L_SPITID+4	;File type (presently always zero)
+XI$L_CHECK==	XI$L_TYPE+4	;Always contains #SPITBOL_NOTEXITMOD
+XI$Q_DATE==	XI$L_CHECK+4	;Date/Time of save in VMS format
+XI$L_CONSS==	XI$Q_DATE+8	;Start addr of CONSSECT in image saved
+XI$L_CONSE==	XI$L_CONSS+4	;End addr of same (both are for checks)
+XI$L_PROGS==	XI$L_CONSE+4	;Start addr of PROGSECT in image saved
+XI$L_PROGE==	XI$L_PROGS+4	;End addr of same
+XI$L_WORKS==	XI$L_PROGE+4	;Addr of start of Working Store
+XI$L_WORKE==	XI$L_WORKS+4	;Addr of end of Working Store
+XI$L_DYNAMS==	XI$L_WORKE+4	;Start address of Spitbol Store
+XI$L_DNAMB==	XI$L_DYNAMS+4	;Value in DNAMB of image
+XI$L_DNAMP==	XI$L_DNAMB+4	;Value in DNAMP of image
+XI$L_DNAME==	XI$L_DNAMP+4	;Value in DNAME of image (hi addr of store)
+XI$L_CHKSUM==	XI$L_DNAME+4	;Checksum of code (PROGSECT)
+XI$L_STKBASE==	XI$L_CHKSUM+4	;Value of STACK_BASE of image (stack start)
+XI$L_WORKBLK==	XI$L_STKBASE+4	;Start VBN of Working Store Block in save file
+XI$L_WORKLEN==	XI$L_WORKBLK+4	;Length in bytes of Working Store
+XI$L_STOREBLK==	XI$L_WORKLEN+4	;Start VBN of Spitbol Store block in save file
+XI$L_STORELEN==	XI$L_STOREBLK+4	;Length in bytes of Spitbol Store
+XI$L_STACKBLK==	XI$L_STORELEN+4	;Start VBN of Stack block in save file
+XI$L_STACKLEN==	XI$L_STACKBLK+4	;Length in bytes of stack area
+XI$K_LENGTH==	XI$L_STACKLEN+4	;Length of header block info
+;
+;	For AUTODIN-II CRC (Whatever that is)
+;
+SYSXI_CRCBITS::	.LONG	^XEDB88320
+;
+;	Message Descriptor (for EXIT(0) Pause Message)
+;
+SYSXI_MSGDESCR::.LONG	80,SYSXI_MESSAGE
+	.PAGE
+	WORKSECT
+;
+;	Table containing CRC values (for CRC instruction)
+;
+SYSXI_CRCTABLE::.BLKL	16
+;
+;	String Descriptor for LIB$DO_COMMAND
+;
+SYSXI_DOCMDD::	.BLKL	2
+;
+;	Longword to hold entry stack pointer value
+;
+SYSXI_ENSTK::	.LONG	0
+;
+;	Exit message for STOPR (in interpreter)
+;
+SYSXI_EXITSCB::	.LONG	B$SCL,101$-100$
+100$:		.ASCII	"EXIT MODULE CREATED"
+101$:		.ALIGN	LONG
+;
+;	Message Descriptor (Var. Length) and Descriptor (see SYSXI_MSGDESCR)
+;
+SYSXI_MSGVLD::	.LONG	0,SYSXI_MESSAGE
+SYSXI_MESSAGE::	.BLKB	80
+SYSXI_MSGFAO::	.LONG	80,SYSXI_MESSAGEFAO
+SYSXI_MESSAGEFAO::.BLKB	80
+SYSXI_MSGFINAL::.LONG	0,SYSXI_MESSAGEFAO
+	.ALIGN	LONG,0
+;
+;	Holds R2..R11 across loads
+;
+SYSXI_REGS::	.BLKL	10
+	.PAGE
+	SAVESECT
+;
+;	RMS Structures for creating EXIT module (they need not be in
+;	FCBLK format)
+;
+SYSXI_EXFAB::	$FAB	FAC=<PUT,BIO>,DNM=<.SEX>,NAM=SYSXI_EXNAM
+SYSXI_EXRAB::	$RAB	FAB=SYSXI_EXFAB,ROP=<BIO>
+SYSXI_EXNAM::	$NAM	RLF=NAM_SYSIN,RSA=SYSXI_EXRSA,RSS=NAM$C_MAXRSS-
+			ESA=SYSXI_EXRSA,ESS=NAM$C_MAXRSS
+SYSXI_EXRSA::	.BLKB	NAM$C_MAXRSS
+SYSXI_EXFNM::	.BLKB	NAM$C_MAXRSS
+;
+;	Area for header block for save file.
+;
+		.PSECT	SYSXI_HEADER,PAGE,WRT,NOEXE,NOSHR
+		.ALIGN	PAGE
+SYSXI_HEADER::	.BLKB	XI$K_LENGTH
+		.ALIGN	PAGE
+	.PAGE
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		(XL/R10) -	Zero or SCBLK ptr
+;		(XR/R9) -	Ptr to v.v SCBLK
+;		(IA/R5) -	Signed integer argument
+;		(WB/R7) -	0 or ptr to head of FCBLK chain
+;		JSB  SYSXI -	Call to EXIT
+;		PPM  loc -	Requested action not possible
+;		PPM  loc -	Action caused irrecoverable error
+;		(registers) -	Preserved over call
+;
+SYSXI::
+	TSTL	R10		;See if there is an SCBLK
+	BNEQ	SYSXI_DOCMD	;If so, then execute the command (terminal)
+	TSTL	R5		;Else see what sort of integer arg we have
+	BEQL	SYSXI_PAUSE	;Suspend to DCL level if zero
+	BGEQ	100$		;Error if positive
+	BRW	SYSXI_SAVE	;Else savefile operation if negative
+;
+;	Here if positive EXIT arg (no can do)
+;
+100$:	MOVL	(SP)+,R11	;Not possible
+	JMP	@(R11)+		;Jump back through return thread
+;
+;	This is the exit point if an error occurs processing any of
+;	the exit options
+;
+SYSXI_ERROR::
+	MOVL	(SP)+,R11		;Get return thread address (-4)
+	JMP	@4(R11)			;Branch through it
+;
+;	Come here to return normally from EXIT(...) call
+;
+SYSXI_EXIT::
+	ADDL2	#8,(SP)			;Point past error threads
+	JMP	@(SP)			;Return to code
+	.PAGE
+	.SBTTL	SYSXI_DOCMD: Execute DCL command (SYSXI)
+;
+;	This routine is entered via a jump to close out SPITBOL
+;	execution and execute a given DCL command (in R10).
+;	This routine is entered via a jump.
+;
+SYSXI_DOCMD::
+	MOVL	4(R10),SYSXI_DOCMDD	;Set length of command
+	CMPL	SYSXI_DOCMDD,#256	;Check length for too big
+	BLEQ	100$			;Branch if OK
+	BRW	SYSXI_ERROR		;Otherwise error return
+;
+;	Here when command length is OK
+;
+100$:	MOVAL	8(R10),SYSXI_DOCMDD+4	;Set address of string
+	PUSHAL	SYSXI_DOCMDD		;Push address for routine
+	CALLS	#1,LIB$DO_COMMAND	;Do It!
+	BRW	SYSXI_ERROR		;If return then error for sure
+	.PAGE
+	.SBTTL	SYSXI_PAUSE: Zero Argument for SYSXI
+;
+;	This routine is entered via a branch from the SYSXI mainline
+;	code to process a zero argument.  The strategy is to call the
+;	FORTRAN support library as if we were doing a PAUSE.
+;
+SYSXI_PAUSE::
+	$GETMSG_S MSGID=#SPITBOL_PAUSE,- ;Get text for waiting message
+		MSGLEN=SYSXI_MSGVLD,BUFADR=SYSXI_MSGDESCR
+	$FAO_S	CTRSTR=SYSXI_MSGVLD,-	;Format in the line number
+		OUTLEN=SYSXI_MSGFINAL,OUTBUF=SYSXI_MSGFAO,P1=KVSTN
+	PUSHAQ	SYSXI_MSGFINAL
+	CALLS	#1,FOR$PAUSE
+	BRW	SYSXI_EXIT
+	.PAGE
+	.SBTTL	SYSXI_SAVE - EXIT with minus args
+;
+;	Branch here to do a (minus arg) Save of the impure regions.
+;
+SYSXI_SAVE::
+	MOVL	SP,SYSXI_ENSTK		;Save entry stack pointer
+	MOVAL	SYSXI_REGS,R11		;Point to register save area
+	MOVQ	R2,(R11)		;Save R2,R3
+	MOVQ	R4,8(R11)		;Save R4,R5
+	MOVQ	R6,16(R11)		;Save R6,R7
+	MOVQ	R8,24(R11)		;Save R8,R9
+	MOVQ	R10,32(R11)		;Save R10,R11
+	MOVAB	SYSXI_HEADER,R11	;Get pointer to header area
+	$GETTIM_S XI$Q_DATE(R11)	;Get date/time
+	JSB	SYSIDENT		;Get Spitbol ID
+	MOVL	R0,XI$L_IDENT(R11)	;Save ID in header
+	MOVL	R1,XI$L_MINOR(R11)	;Save minor ID in header
+	MOVL	8(R9),XI$L_SPITID(R11)	;Save 1st 4 chars of major version str.
+	CLRL	XI$L_TYPE(R11)		;Set type longword
+	MOVL	#SPITBOL_NOTEXITMOD-	;Indicate that its an exit module
+		,XI$L_CHECK(R11)
+	MOVAB	CONS_START,XI$L_CONSS(R11) ;Save start addr of constant store
+	MOVAB	CONS_END,XI$L_CONSE(R11) ;Save end addr of constant store
+	MOVAB	WORK_START,XI$L_WORKS(R11) ;Save start addr of working store
+	MOVAB	WORK_END,XI$L_WORKE(R11) ;Save end addr of working store
+	MOVAB	PROG_START,XI$L_PROGS(R11) ;Save start addr of program sect
+	MOVAB	PROG_END,XI$L_PROGE(R11) ;Save end addr of program sect
+	MOVL	DYNAM_START,XI$L_DYNAMS(R11) ;Save start addr of Spitbol Store
+	MOVL	DNAMB,XI$L_DNAMB(R11)	;Save base of Spitbol Dynamic
+	MOVL	DNAMP,XI$L_DNAMP(R11)	;Save end of active dynamic store
+	MOVL	DNAME,XI$L_DNAME(R11)	;Save absolute end of dynamic store
+	MOVL	STACK_BASE,XI$L_STKBASE(R11) ;Save start addr of stack store
+	CALLS	#0,SYSXI_CRCCODE	;Do a checksum on the program code
+	MOVL	R1,XI$L_CHKSUM(R11)	;Save the result
+;
+;	Compute file allocation for working store
+;
+	MOVL	#2,R0			;Starting VBN for data (header is 1)
+	MOVL	R0,XI$L_WORKBLK(R11)	;Save it
+	MOVL	#WORK_END-WORK_START,R2	;Compute length of work. store
+	MOVL	R2,XI$L_WORKLEN(R11)	;Save it
+	ADDL2	#511,R2			;Round up page
+	ASHL	#-9,R2,R2		;Compute number of pages
+	ADDL2	R2,R0			;Add in to running total
+;
+;	Compute file allocation for Spitbol store
+;
+	MOVL	R0,XI$L_STOREBLK(R11)	;Save as starting block of Spit. store
+	SUBL3	DYNAM_START,DNAMP,R2	;Get length of Spitbol store
+	MOVL	R2,XI$L_STORELEN(R11)	;Save length
+	ADDL2	#511,R2			;Round up
+	ASHL	#-9,R2,R2		;Compute number of pages
+	ADDL2	R2,R0			;Add in to running total
+;
+;	Compute file allocation for Stack
+;
+	MOVL	R0,XI$L_STACKBLK(R11)	;Save as start block of stack
+	SUBL3	SYSXI_ENSTK,STACK_BASE,R2 ;Get length of stack
+	ADDL2	#511,R2			;Round up
+	BICL2	#^X1FF,R2		;Make a page boundary
+	MOVL	R2,XI$L_STACKLEN(R11)	;Save in header
+	ASHL	#-9,R2,R2		;Compute number of pages
+	ADDL2	R0,R2			;Add in running total
+	$FAB_STORE FAB=SYSXI_EXFAB-	;Save as allocation size
+		,ALQ=R2-
+		,FAC=#FAB$M_BIO!FAB$M_PUT-
+		,FOP=#FAB$M_CBT!FAB$M_CIF!FAB$M_OFP!FAB$M_TEF-
+		,FNS=#0
+;
+;	Open the file
+;
+	$CREATE	FAB=SYSXI_EXFAB		;Issue Create
+	BLBS	R0,100$			;Press on if OK
+	BRW	SYSXI_SAVEDONE		;Else return w/error
+;
+;	Here when successful Create
+;
+100$:	$CONNECT RAB=SYSXI_EXRAB	;Issue Connect
+	BLBS	R0,200$			;Press on if OK
+	BRW	SYSXI_SAVEDONE		;Else return w/error
+;
+;	Write out the impure data
+;
+200$:	XIWRITE	(R11),#XI$K_LENGTH,#1	;Write header at VBN 1
+	XIWRITE	WORK_START,-		;Write out working store
+		XI$L_WORKLEN(R11),XI$L_WORKBLK(R11)
+	XIWRITE	@DYNAM_START,-		;Write out SPITBOL store
+		XI$L_STORELEN(R11),XI$L_STOREBLK(R11)
+	SUBL3	XI$L_STACKLEN(R11),STACK_BASE,R1 ;Get stack bottom
+	XIWRITE	(R1),-			;Write out stack
+		XI$L_STACKLEN(R11),XI$L_STACKBLK(R11)
+	$CLOSE	FAB=SYSXI_EXFAB		;Close the file
+;
+;	Merge to exit or error (R0 set with status)
+;
+SYSXI_SAVEDONE::
+	MOVAL	SYSXI_REGS,R11		;Point to register save block
+	MOVQ	(R11),R2		;Restore old R2,R3
+	MOVQ	8(R11),R4		;Restore old R4,R5
+	MOVQ	16(R11),R6		;Restore old R6,R7
+	MOVQ	24(R11),R8		;Restore old R8,R9
+	MOVQ	32(R11),R10		;Restore old R10,R11
+	BLBS	R0,100$			;OK if no error
+	BRW	SYSXI_ERROR		;Else report error
+;
+;	Here to exit with message if no error (beware, regs have already
+;	been restored)
+;
+100$:	PUSHL	SYSXI_EXNAM+NAM$L_RSA	;Set address of name string as arg
+	MOVZBL	SYSXI_EXNAM+NAM$B_RSL,-(SP) ;Set length of filename as arg
+	PUSHL	#2			;Indicate 2 FAO args
+	PUSHL	#SPITBOL_EXIT		;Set message id
+	CALLS	#4,LIB$SIGNAL		;Signal the message
+	MOVL	#1,KVCOD		;Set &CODE to success not-message
+	MOVAL	SYSXI_EXITSCB,R9	;Set message for STOPR
+	JMP	STOPR			;End run
+	.PAGE
+	.SBTTL	SYSXI_RELOAD: Return from exit module
+;
+;	This section is entered from SPITGO when the /LOAD switch
+;	is given, signalling a reload from a previously saved EXIT
+;	exit module.  Any filename given on /LOAD=name is in the FAB/FNM
+;	structures already.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		JMP	SYSXI_RELOAD	;Jump to reload exit module
+;
+SYSXI_RELOAD::
+	$FAB_STORE FAB=SYSXI_EXFAB-	;Set options for $OPEN
+		,FAC=#FAB$M_GET-
+		,FOP=#FAB$M_OFP!FAB$M_UFO-
+		,FNA=SYSXI_EXFNM
+	$OPEN	FAB=SYSXI_EXFAB		;Attempt to open given file
+	BLBS	R0,40$			;OK if it worked - branch
+	PUSHL	SYSXI_EXFAB+FAB$L_STV	;Push RMS STV value
+	PUSHL	SYSXI_EXFAB+FAB$L_STS	;Push status
+	PUSHAL	SYSXI_EXRSA		;Address of Result String Area
+	MOVZBL	SYSXI_EXNAM+NAM$B_RSL,R3 ;Get result string length
+	BGTR	20$			;OK if non-zero
+	MOVZBL	SYSXI_EXNAM+NAM$B_ESL,R3 ;Else get expanded string length
+;
+;	Merge with length of filename string in R3
+;
+20$:	PUSHL	R3			;Put it on stack
+	PUSHL	#2			;Indicate 2 FAO Args
+	PUSHL	#SPITBOL_LOADOPEN	;Major error id
+	CALLS	#6,LIB$STOP		;Bye!
+;
+;	Here when RMS structures all set
+;
+40$:	MOVAL	SYSXI_HEADER,R11	;For convenience
+	XIREAD	(R11),#XI$K_LENGTH,#1	;Issue read
+;
+;	Now we verify the header against the present version of the
+;	system to make certain that the exit module is compatible
+;
+60$:	CMPL	#SPITBOL_NOTEXITMOD-	;First be certain it IS an exit module
+		,XI$L_CHECK(R11)
+	BEQLU	70$			;Skip if it is
+	PUSHAL	SYSXI_EXRSA		;Address of Result String Area
+	MOVZBL	SYSXI_EXNAM+NAM$B_RSL,-(SP) ;Push result string length
+	PUSHL	#2			;Indicate 2 FAO Args
+	PUSHL	#SPITBOL_NOTEXITMOD	;Major error id
+	CALLS	#4,LIB$STOP		;Bye!
+;
+;	Check the version id data
+;
+70$:	CMPL	HEADV+8,XI$L_SPITID(R11) ;Are the major IDs the same?
+	BNEQ	78$			;Branch if not
+	JSB	SYSIDENT		;Get IDENT in R0/R1
+	CMPL	R0,XI$L_IDENT(R11)	;Majors the same?
+	BNEQ	78$			;Branch for error if not
+	CMPL	R1,XI$L_MINOR(R11)	;Minors the same?
+	BEQL	80$			;Branch to press on if so
+;
+;	Here if version incompatibility
+;
+78$:	PUSHL	#SPITBOL_LOADVERS	;Load version error
+	CALLS	#1,LIB$STOP		;And snuff out
+;
+;	CRC the code to verify compatibility.
+;
+80$:	BITL	#OPT_CRC,SYSPP_OPT	;Check state of /CRC request bit
+	BEQLU	250$			;Skip check if explicit unrequest
+	CALLS	#0,SYSXI_CRCCODE	;CRC the code
+	CMPL	R1,XI$L_CHKSUM(R11)	;Compare 'em
+	BEQLU	250$			;Branch if they compare
+	PUSHL	#SPITBOL_LOADCRC	;Else set error
+	CALLS	#1,LIB$STOP		;And die
+;
+;	Here when enough stack set up
+;
+250$:	XIREAD	WORK_START-		;Issue read for working store
+		,XI$L_WORKLEN(R11),XI$L_WORKBLK(R11)
+	XIREAD	@XI$L_DYNAMS(R11)-	;Issue read for Spitbol store
+		,XI$L_STORELEN(R11),XI$L_STOREBLK(R11)
+	SUBL3	XI$L_STACKLEN(R11)-	;Get top address of old stack
+		,XI$L_STKBASE(R11),R2
+	SUBL2	#1024,R2		;Point past it (with guard page)
+	PUSHAL	-4000(R2)		;End address to map in (room for debug)
+	PUSHAL	(R2)			;Start address to map in
+	MOVL	SP,R3			;Point to descriptor
+	$CRETVA_S INADR=(R3)		;Map in some scratch stack
+	BLBS	R0,260$			;Go on if it worked
+	PUSHL	R0			;Set minor message
+	CLRL	-(SP)			;No FAO args
+	PUSHL	#SPITBOL_LOADMEM	;Memory allocation failure
+	CALLS	#3,LIB$STOP		;Die
+;
+;	Here when scratch stack area mapped in above the range where
+;	the old stack will be mapped
+;
+260$:	MOVL	R2,SP			;Work in scratch area
+	SUBL3	XI$L_STACKLEN(R11)-	;Get top of stack address
+		,XI$L_STKBASE(R11),R2
+	XIREAD	(R2),XI$L_STACKLEN(R11)-;Issue read for Stack
+		,XI$L_STACKBLK(R11)
+	MOVAL	SYSXI_REGS,R11		;Point to register save block
+	MOVQ	(R11),R2		;Restore old R2,R3
+	MOVQ	8(R11),R4		;Restore old R4,R5
+	MOVQ	16(R11),R6		;Restore old R6,R7
+	MOVQ	24(R11),R8		;Restore old R8,R9
+	MOVQ	32(R11),R10		;Restore old R10,R11
+	PUSHR	#^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11> ;Hang on to them
+	CMPL	R5,#-2			;Check for option respec.
+	BLSS	270$			;Skip if not
+	MOVL	PARSE_GCBLK+CLI$Q_RQDESC,R6  ;Get command line length.
+	BEQL	270$			;Forget it if null.
+	JSB	ALOCS			;Else allocate SCBLK for it.
+	MOVC3	R8,-			;Copy in characters
+		@PARSE_GCBLK+CLI$Q_RQDESC+4,4*SCHAR(R9)
+	MOVL	R9,R$ETX		;And Point &ERRTEXT at it.
+;
+;	Merge Here After R$ETX (&ERRTEXT) set properly.
+;
+270$:	POPR	#^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11> ;Make sure registers set
+	MOVL	SYSXI_ENSTK,SP		;Set SP to EXIT entry value
+	SUBL3	#4*E$SRS,DYNAM_END,DNAME ;Set DNAME in interpreter
+	BRW	SYSXI_EXIT		;Back to interpreter
+	.PAGE
+	.SBTTL	SYSXI_CRCCODE: CRC the program section
+;
+;	This routine computes a CRC of the code section.
+;	This CRC can be checked when the impure data is reloaded to
+;	insure the the data is compatible.
+;
+	PROGSECT
+;
+;	Calling Sequence:
+;
+;		CALLS #0,SYSXI_CRCCODE
+;		(R0) -		1 on return (success)
+;		(R1) -		Computed CRC
+;
+SYSXI_CRCCODE::.WORD	^M<R2,R3,R4,R5,R6,R7>
+	PUSHAL	SYSXI_CRCTABLE		;Arg for library routine
+	PUSHAL	SYSXI_CRCBITS		;Arg for library routine
+	CALLS	#2,LIB$CRC_TABLE	;Calculate the strange table
+	MOVAB	PROG_START,R7		;Get start address of code
+	MOVL	#-1,R0			;Initial AutoDin CRC
+	MOVL	#PROG_END-PROG_START,R5	;Get length of code
+	ASHL	#-15,R5,R6		;Get number of 32Kb blocks
+;
+;	Loop here on successive 32KB blocks of code to compute the checksum
+;
+100$:	CRC	SYSXI_CRCTABLE,R0,#32768,(R7) ;Do the CRC
+	ADDL2	#32768,R7
+	SOBGTR	R6,100$
+;
+;	Now do the remainder
+;
+	BICL2	#^XFFFF8000,R5		;Get length in R5
+	CRC	SYSXI_CRCTABLE,R0,R5,(R7) ;Do last hunk
+	MOVL	R0,R1			;Set return value
+	MOVL	#1,R0			;Signal Success
+	RET				;Back we go
+	.PAGE
+	.SBTTL	SYSXI_BREAD: Read and Map Sections of Exit Module
+;
+;	This routine is called to map a section of memory from the save
+;	file.
+;
+;	Calling Sequence:
+;
+;		PUSHL	Start address in memory
+;		PUSHL	Length
+;		PUSHL	Virt. Block number for write
+;		CALLS	#3,SYSXI_BWRITE
+;		(Die out in LIB$STOP if CRMPSC fails)
+;
+SYSXI_BREAD::	.WORD	0
+	PUSHL	12(AP)			;Start virt. addr.
+	ADDL2	8(AP),(SP)		;Add length displacement
+	SUBL2	#1,(SP)			;Convert to end address
+	PUSHL	12(AP)			;Start virtual address
+	MOVL	SP,R1			;Point to address range descriptor
+	$CRMPSC_S INADR=(R1)-		;Map in virtual addresses
+		,FLAGS=#SEC$M_WRT!SEC$M_CRF,CHAN=FAB$L_STV+SYSXI_EXFAB-
+		,VBN=4(AP)
+	MOVAL	8(SP),SP		;Pop address range from stack
+	BLBS	R0,100$			;OK if low bit set
+	PUSHL	R0			;Else stack error
+	PUSHAL	SYSXI_EXRSA		;Address of name string
+	MOVZBL	SYSXI_EXNAM+NAM$B_RSL,-(SP) ;Push length of filename string
+	PUSHL	#2			;2 FAO args
+	PUSHL	#SPITBOL_LOADMAP	;Can't map section
+	CALLS	#5,LIB$STOP		;Die
+;
+;	Here when section is mapped to return
+;
+100$:	MOVL	#1,R0			;Signal success
+	RET				;Back to caller
+	.PAGE
+	.SBTTL	SYSXI_BWRITE: Read/Write Blocks of Exit Module
+;
+;	This routine is called to write a section of memory in block
+;	mode to the save file.
+;
+;	Calling Sequence:
+;
+;		PUSHL	Start address in memory
+;		PUSHL	Length
+;		PUSHL	Virt. Block number for write
+;		CALLS	#3,SYSXI_BWRITE
+;		R0 -	Set to status of last RMS operation
+;
+SYSXI_BWRITE::.WORD	^M<R2,R3,R4>
+	MOVL	12(AP),R2		;R2 holds start of next transfer
+	MOVL	8(AP),R3		;Length remaining to transfer
+	MOVL	4(AP),R4		;R4 holds next VBN to write
+;
+;	Loop here on 32KB blocks.
+;
+100$:	SUBL2	#32768,R3		;Pull out length
+	BLSS	200$			;Exit loop if result negative
+	$RAB_STORE RAB=SYSXI_EXRAB-	;Stuff parameters for write
+		,RSZ=#32768,RBF=(R2),BKT=R4
+	$WRITE	RAB=SYSXI_EXRAB		;Issue write
+	BRB	180$			;Go check status
+;
+;	Merge after I/O to check status
+;
+180$:	BLBC	R0,300$			;Branch to abexit if error
+	ADDL2	#64,R4			;Bump up block address
+	ADDL2	#32768,R2		;Bump up count
+	BRB	100$			;Back for more
+;
+;	Here to transfer remainder
+;
+200$:	ADDL2	#32768,R3		;Restore count
+	BEQL	300$			;Exit if count zero
+	$RAB_STORE RAB=SYSXI_EXRAB,-	;Set up transfer parameters
+		RSZ=R3,RBF=(R2),BKT=R4
+	$WRITE	RAB=SYSXI_EXRAB		;Issue Write
+	BRB	300$			;Branch to exit
+;
+;	Merge with R0 set to status.
+;
+300$:	RET				;Back to caller
+	.END

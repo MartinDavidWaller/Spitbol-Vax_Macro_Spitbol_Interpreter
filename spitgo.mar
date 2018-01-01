@@ -1,0 +1,909 @@
+	.TITLE	SPITGO - STARTUP MODULE FOR SPITBOL
+;
+;	COPYRIGHT (c) 1981 under BERNE and UNIVERSAL COPYRIGHT
+;	LAW by DEWAR INFORMATION SYSTEMS CORPORATION.
+;
+;	The software described in this document is proprietary
+;	to DEWAR INFORMATION SYSTEMS CORPORATION and furnished
+;	to the purchaser under a license  for use on a  single
+;	computer  system and can be copied (with the inclusion
+;	of DEWAR INFORMATION SYSTEMS  CORPORATIONS's copyright 
+;	notice) only for use in such system.
+;
+;
+;	This software is the property of:
+;
+;	Steven G. Duff
+;	c/o Dewar Information Systems Corp.
+;	221 West Lake Street
+;	Oak Park, Illinois  60302
+;	(312) 524-1644
+;
+	.PAGE
+	.SBTTL	SPITGO - Definitions
+	.PSECT	SPITBOL,LONG
+	.LIBRARY "SPITMACS"
+;
+	IDENT	SPITGO,A,6
+;
+	.PAGE
+	.SBTTL	SPITGO - Revision History
+;
+; V35-A6 11-AUG-1981 [SGD]:
+; o Force stack base alignment to page boundary for EXIT/LOAD= purposes
+;
+; V35-A5 09-AUG-1981 [SGD]:
+; o Changed handling of /LIST to control listing and statistics, and
+;   /OUTPUT which now controls (optionally) the execution output.
+;   /NOOUTPUT switch added (works as /OUTPUT=NL:).  Also fixed /LIST so
+;   that if specified following /NOLIST, it undoes the /NOLIST action.
+;   If no /OUTPUT=... given, the default is to continue the /LIST file.
+; o Added LIB$SIM_TRAP for 11/750 and future models to handle floating
+;   faults correctly.
+; o Added /CRC and /NOCRC switches to speed up /LOAD operations where
+;   desired.
+;
+; V35-A4 20-JUL-1981 [SGD]:
+; o Added EXE$CATCH_ALL as default exception handler (if defined).
+;   This is a .WEAK symbol, so if SYS.STB isn't in the link, or is
+;   zero, then this exception frame won't be created.  This capability
+;   is useful to avoid overriding the debugger exception handler.
+;
+; V35-A3 18-JUN-1981 [SGD]:
+; o Added /WARN and /NOWARN
+; o Altered STACK_HILIM to correlate with observed entry stack in VMS V2.3
+;
+; V35-A2 13-MAY-1981 [SGD]:
+; o Removed MXLEN stuff in favor of using link-time base address
+; o Set default /MINT to 200 pages.
+;
+; V35-A1 14-APR-1981 [SGD]:
+; o Changed SPITGO version number to conform to new scheme
+; o Added support for EXIT function.  Chiefly this entailed handling
+;   a new switch (/LOAD [=file]), and checking for it before invoking
+;   SPITBOL. Also modified stack at startup to use new STACK_HILIM
+;   symbol.  This is to permit EXIT() to be relatively independent
+;   of VMS changes.
+;
+; V35-007 11-FEB-81 and beyond [SGD]:
+; o Removed DEFLPP symbol and use LIB$LP_LINES (V2.0 only now)
+; o Take out SYSIL call for SYS$OUTPUT and use the following for
+;   the line width (in order):
+;   o The command line value if given (/WIDTH=...)
+;   o The device buffer size if record device and size in range [0..255]
+;   o The default (DEFPLL=132)
+; o Rewrote sections of command line parser to...
+;   o Allow switches anywhere
+;   o Make /LIST=filename possible
+;   o Make /LIST and /OUTPUT the same
+;   o Switches handled left to right with later occurrences overriding
+;     earlier ones in same command line.
+;   o /NOLIST implies a /NOCS and /NOES
+;   o Add /WIDTH=n switch. (see above re default output width)
+; o Cleaned up some of the formatting
+; o Made input filespec manditory - no default
+; o Changed Error Messsage Handling to use LIB$STOP
+; o Cleared up stack overflow handling by adding last chance vector
+;   (SPITGO_LASTCH) which goes directly to STOPR rather than
+;   through the STACK$ logic.  That is, stack overflow is now
+;   treated as immediately fatal.  This makes it possible to
+;   avoid any stack space expansion code as this done automatically
+;   in V2.  STACK_LIMIT is now also gone.
+; o Renamed EXCEP_HANDLER to SPITGO_EXCEP to better conform to naming
+;   of condition handler entry points (see above).
+;
+; V35-006 08-NOV-80 [SGD]:
+;	Added FOP=SQO to all FCBs herein. (Allows net processing)
+;	Renamed ARITH_HANDLER to EXCEP_HANDLER.  Tried to modify the
+;	  appendage to handle ultimate stack overflow, but VMS design
+;	  fouled up in this regard & after conversation with Dick
+;	  Hustevadt @ DECUS, decided to give up.
+;
+; V35-005 02-JUL-80 [SGD]:
+;	Split FCB_TERM into FCB_TERMI and FCB_TERMO to allow
+;	separated association to SYS$INPUT and SYS$OUTPUT instead of
+;	TT:
+;
+; V35-004 02-JUL-80 [SGD]:
+;	Fixed SYSIO so that non-file structured devices do not pass through
+;	RMS $SEARCH service.  This cures several related problems having to
+;	do with failed input associations on non-file devices.
+;
+; V35-003 13-JUN-80 [SGD]:
+;	Allow for " as premature termination of command line
+;	string (see PARSE_OPTIONS).  This allows text to be passed to
+;	the program directly from the command line (See SYSBX).
+;
+; V35-002 24-MAY-80 [SGD]:
+;	Standard input and output files not found error now prints
+;	fully translated file name.
+;	Note that this is accomplished by 'overlaying' an ESA area on
+;	the RSA buffer for SYSIN and SYSOUT.
+;
+	.PAGE
+	CONSSECT
+	.SBTTL	DEFINITIONS
+;
+;	System Offsets
+;
+	$CHFDEF				;Define Condition Handler Codes
+	$DIBDEF				;Define Device Info Block Codes
+	$FCBDEF				;Define FCBLK Offsets
+	$JPIDEF				;Define GETJPI Codes
+	$TPADEF				;Define TPARSE Codes
+;
+	.WEAK	EXE$CATCH_ALL		;System catch-all handler
+;
+;	Define Option Bits For SYSPP setup.
+;
+OPT_ERI==	1			;Error copy to Interactive Chan. Bit
+OPT_SPI==	OPT_ERI@1		;Standard Printer IS Inter. Chan Bit
+OPT_NLS==	OPT_SPI@1		;Initial "-NOLIST" Bit.
+OPT_SCM==	OPT_NLS@1		;Suppress Compilation Stats Bit.
+OPT_SEX==	OPT_SCM@1		;Suppress Execution Stats Bit.
+OPT_EXT==	OPT_SEX@1		;Extended Listing Bit
+OPT_NEX==	OPT_EXT@1		;Initial "-NOEXECUTE" Bit.
+OPT_TRM==	OPT_NEX@1		;Preassociate TERMINAL Bit.
+OPT_STL==	OPT_TRM@1		;Standard Listing Option Bit.
+OPT_SBL==	OPT_STL			;End of SPITBOL option bits
+OPT_LOD==	OPT_STL@1		;Indicate /LOAD requested.
+OPT_WRN==	OPT_LOD@1		;Indicate /WARN requested.
+OPT_CRC==	OPT_WRN@1		;Indicate /CRC requested.
+;
+;	Build Standard Option Values Using Bits Above
+;
+DEFOPT=	OPT_ERI ! OPT_EXT ! OPT_TRM ! OPT_WRN ! OPT_CRC ;Normal Options
+DEFTRM=	OPT_ERI ! OPT_SPI ! OPT_EXT ! OPT_STL ;Bits flipped in DEFOPT if Term
+;
+;	Other Default Values
+;
+DEFPLL=	132				;Default Print Line Length
+DEFINC=	20				;Default Pages for SYSMM
+DEFMEM=	200				;Default Number of Mem Pgs. in Dynamic
+ERBFLN= 132				;Max. Error Message Length
+;
+;	STACK_HILIM is a symbol defining the base (max. address) of the
+;	start of the interpreter stack in P1.  The reason for this symbol
+;	is so that some room can be left between the VMS entry stack
+;	value and STACK_BASE (if possible). This is done so that EXIT
+;	modules can be reloaded in the event VMS changes and uses more stack.
+;	This value must be page aligned (for exit/load purposes)
+;
+STACK_HILIM==^X7FFA8000
+	.PAGE
+;
+;	GETJPI Request Block For Finding Out Where Our Memory Limits
+;	in P0 and P1 Are.
+;
+JPI_STADR:	.WORD	4		;End-Of-P0 Value is 4 Bytes Long
+		.WORD	JPI$_FREP0VA	;Request is End-Of-P0 Address
+		.LONG	SETSP_FREP0	;Put Answer There Please
+		.LONG	0		;No Return Length
+		.WORD	4		;End-of-P1 value is one longword
+		.WORD	JPI$_FREP1VA	;Request end-of-P1
+		.LONG	SPITGO_FREP1	;Where to put it
+		.LONG	0		;No return length
+		.LONG	0		;End-of-list marker
+;
+;	Descriptor area for $GETDEV call for standard output file
+;
+SPITGO_BUFDESCR::.LONG	DIB$K_LENGTH,SPITGO_OUTCHAR
+;
+;	SCBLK for last chance condition handler to give to STOPR
+;
+SPITGO_STKMSG::	.LONG	B$SCL		;SCBLK for Stack overflow message
+		.LONG	101$-100$	;Length
+100$:		.ASCII	"STACK SPACE EXCEEDED (FATAL)"
+101$:		.ALIGN	LONG,0
+;
+	.PAGE
+	SAVESECT
+	.SBTTL	SPITGO - SAVE DATA AREA
+;
+;	The working storage in this PSECT is to be preserved across EXIT(...)
+;	image activations (ie - not to be loaded in as with WORKSECT store)
+;
+;
+;	Descriptor for SPITBOL dynamic
+;
+DYNAM_PAGES::	.LONG	0		;Holds number of requested pages
+DYNAM_START::	.LONG	0		;Holds starting byte of Dynamic
+DYNAM_END::	.LONG	0		;Holds Ending Byte Address of Dynamic
+;
+;	For PARSE_OPTIONS
+;
+PARSE_YESBT::	.LONG	0		;Requested Option Bits
+PARSE_NOBIT::	.LONG	0		;Denied Option Bits
+;
+PARSE_GCBLK::	$CLIREQDESC  RQTYPE=CLI$K_GETCMD  ;Request Cmd. Line from CLI
+;
+PARSE_TPBLK::	.LONG	TPA$K_COUNT0	;Tparse Control Block
+		.LONG	TPA$M_ABBREV	;Permit Abbreviations of Keywords
+		.BLKL	TPA$K_LENGTH0-8	;Allocate Remainder of Block
+;
+;	Data For SET_SYSPP Routine
+;
+SETSP_FREP0:	.LONG	0		;GETJPI Puts 1+End-of-P0 Here
+;
+;	Device name descriptor area for $GETDEV call
+;
+SPITGO_DEVDESCR::.BLKL	2
+;
+;	End of Stack Address Here
+;
+SPITGO_FREP1::	.LONG	0		;Initialized by $GETJPI call
+;
+;	SYSOUT device characteristics placed here
+;
+SPITGO_OUTCHAR::.BLKB	DIB$K_LENGTH	;Full characteristics
+;
+;	/OUTPUT file name descriptor
+;
+SPITGO_OUTLEN::	.LONG	0		;Length of name (zero means none)
+SPITGO_OUTNAM::	.BLKB	NAM$C_MAXRSS	;Name string buffer
+;
+;	Stack State Descriptor
+;
+STACK_BASE::	.LONG	0		;Bottom of Stack (Most Negative) in P1
+		.PAGE
+;
+;	SYSIN, SYSOUT, TERMINAL RMS Control Blocks
+;	Note That SYSIN, SYSOUT & TERM Must Be Layed Out in Conformance with
+;	Standard FCBLKs.  They are not created with the $FCB Macro because
+;	They Do Not Use The Default Options, However, they Must Follow The
+;	Same Internal Organization Since They Can be Passed To Routines
+;	Which Expect Them To Be In That Form.
+;
+		.ALIGN	LONG,0
+FCB_SYSOUT::	.LONG	0,FCB$K_BLN,0	;Dummy Type,Length Word and Option Bits
+FAB_SYSOUT::	$FAB	FAC=PUT,MRS=0,RAT=CR,RFM=VAR,ORG=SEQ,-
+			DNM=<.LIS>,NAM=NAM_SYSOUT,FOP=<OFP,SQO>,-
+			XAB=XAB_SYSOUT,FNA=FNM_SYSOUT,FNS=0
+RAB_SYSOUT::	$RAB	FAB=FAB_SYSOUT
+XAB_SYSOUT::	$XABFHC			;File Header Data
+NAM_SYSOUT::	$NAM	RLF=NAM_SYSIN,RSA=RSA_SYSOUT,RSS=NAM$C_MAXRSS,-
+			ESA=RSA_SYSOUT,ESS=NAM$C_MAXRSS
+FNM_SYSOUT::	.BLKB	NAM$C_MAXRSS	;File Name Area
+RSA_SYSOUT::	.BLKB	NAM$C_MAXRSS	;Result String Area
+;
+FCB_SYSIN::	.LONG	0,FCB$K_BLN,0	;Dummy Type, Length Word, Options Bits
+FAB_SYSIN::	$FAB	FAC=GET,XAB=XAB_SYSIN,NAM=NAM_SYSIN,ORG=SEQ,-
+			FNA=FNM_SYSIN,FNS=0,DNM=<.SPT>,FOP=SQO
+RAB_SYSIN::	$RAB	FAB=FAB_SYSIN
+XAB_SYSIN::	$XABFHC			;File Header XAB
+NAM_SYSIN::	$NAM	RSA=RSA_SYSIN,RSS=NAM$C_MAXRSS,-
+			ESA=RSA_SYSIN,ESS=NAM$C_MAXRSS
+FNM_SYSIN::	.BLKB	NAM$C_MAXRSS	;Filename Text Area
+RSA_SYSIN::	.BLKB	NAM$C_MAXRSS	;Result Filename For SYSIN
+;
+FCB_TERMI::	.LONG	0,FCB$K_BLN,0	;Dummy Type, Length Word, Option Bits
+FAB_TERMI::	$FAB	FNA=FNM_TERMI,FNS=FNM$C_TERMI,FAC=GET,RAT=CR,ORG=SEQ,-
+			FOP=SQO
+RAB_TERMI::	$RAB	FAB=FAB_TERMI
+XAB_TERMI::	$XABFHC
+NAM_TERMI::	$NAM	RSA=RSA_TERMI,RSS=NAM$C_MAXRSS
+FNM_TERMI::	.ASCII	"SYS$INPUT"
+FNM$C_TERMI==	.-FNM_TERMI
+		.BLKB	NAM$C_MAXRSS-FNM$C_TERMI
+RSA_TERMI::	.BLKB	NAM$C_MAXRSS
+;
+FCB_TERMO::	.LONG	0,FCB$K_BLN,0	;Dummy Type, Length Word, Option Bits
+FAB_TERMO::	$FAB	FNA=FNM_TERMO,FNS=FNM$C_TERMO,FAC=PUT,RAT=CR,ORG=SEQ,-
+			FOP=SQO
+RAB_TERMO::	$RAB	FAB=FAB_TERMO
+XAB_TERMO::	$XABFHC
+NAM_TERMO::	$NAM	RSA=RSA_TERMO,RSS=NAM$C_MAXRSS
+FNM_TERMO::	.ASCII	"SYS$OUTPUT"
+FNM$C_TERMO==	.-FNM_TERMO
+		.BLKB	NAM$C_MAXRSS-FNM$C_TERMO
+RSA_TERMO::	.BLKB	NAM$C_MAXRSS
+;
+	.PAGE
+	WORKSECT
+	.SBTTL	SPITGO - DATA AREA
+;
+;	Signal Argument Lists for LIB$STOP
+;
+ERRAL_CANTOUT::	.LONG	6,SPITBOL_OPENOUT,2,0,RSA_SYSOUT,0,0
+ERRAL_CANTIN::	.LONG	6,SPITBOL_OPENIN,2,0,RSA_SYSIN,0,0
+ERRAL_INSVIR::	.LONG	4,SPITBOL_INSVIRMEM,0,0,0
+	.PAGE
+	.SBTTL	SPITGO - ENTRY POINT FOR MACRO SPITBOL
+	PROGSECT
+;
+;	This is the Entry Point for Macro Spitbol from VMS.  It
+;	causes the option command line to be read and parsed, registers
+;	set up, essential file associations set and jumps into the
+;	interpreter.
+;
+	.ENTRY	SPITGO,^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11>
+;
+	MOVAL	@#EXE$CATCH_ALL,(FP)	;Set as base exception handler
+	BEQL	SPITGO$+2		;Skip pseudo-frame if not defined
+	CALLS	#0,SPITGO$		;Otherwise build new frame
+;
+;	Call here from above to establish new stack frame for our local
+;	exception handler when entry frame handler slot occupied.
+;
+SPITGO$::.WORD	0
+;
+;	Establish Management for Arithmetic Traps.
+;	Int. Ovfl., Float. Underflow and Decimal Overflow are simply
+;	Masked Out.  Div. by Zero and Floating Overflow must be
+;	Handled by a Condition Handler
+;
+	BICPSW	#<1@5>!<1@6>!<1@7>	;Mask Out IV,FU and DV Traps
+	MOVAL	SPITGO_EXCEP,(FP)	;Handler Takes Care of The Rest
+	$SETEXV_S #2,SPITGO_LASTCH	;Set last chance handler
+;
+;	Set up processing options for SPITBOL
+;
+	JSB	PARSE_OPTIONS		;Get options parsed out
+	BITL	#OPT_LOD,PARSE_YESBT	;See if /LOAD requested
+	BEQLU	10$			;Output file OK as is if not
+	TSTL	SPITGO_OUTLEN		;See if special output file
+	BEQL	10$			;Also OK if not
+	MOVC5	#NAM$C_MAXRSS,SPITGO_OUTNAM- ;Else set /OUT name for std chan
+		,#0,#RSA_SYSOUT-FNM_SYSOUT,FNM_SYSOUT
+	MOVB	SPITGO_OUTLEN,FAB_SYSOUT+FAB$B_FNS ;Set length
+;
+;	Now Open the Standard Input File (SYSIN)
+;
+10$:	MOVAL	FCB_SYSIN,R6		;Put FCBLK Pointer In WA/R6
+	JSB	SYSOPEN			;Call System Std. Routine
+	BLBS	R0,20$			;OK If No Error
+	MOVZBL	NAM$B_ESL+NAM_SYSIN,-	;Else Move Filename Length to Signal
+		ERRAL_CANTIN+12
+	MOVL	FAB$L_STS+FAB_SYSIN,-	;...And RMS Status Code
+		ERRAL_CANTIN+20
+	MOVL	FAB$L_STV+FAB_SYSIN,-	;...And RMS Status Value
+		ERRAL_CANTIN+24
+	CALLG	ERRAL_CANTIN,LIB$STOP	;And Snuff Ourselves
+;
+;	Now establish the SYSPP options
+;
+20$:	JSB	SET_SYSPP		;Set File-Dependent Options
+;
+;	Now allocate dynamic region for SPITBOL
+;
+27$:	$GETJPI_S  ITMLST=JPI_STADR	;Find Out Current End of Regions
+	MOVL	SETSP_FREP0,DYNAM_START	;Move Our Own Addr. In
+	ADDL2	#511,DYNAM_START	;Round Up to Next Page
+	ASHL	#9,DYNAM_PAGES,DYNAM_END  ;Get # Bytes In Initial Dynamic Reg'n
+	ADDL2	DYNAM_START,DYNAM_END	;Add In Start Addr To Get End Addr
+	$CRETVA_S  INADR=DYNAM_START,RETADR=DYNAM_START  ;Map In Dynamic
+	BLBS	R0,100$			;Branch if all hunky-dory
+	MOVL	R0,ERRAL_INSVIR+12	;Save error code
+	CALLG	ERRAL_INSVIR,LIB$STOP	;And Exit
+;
+;	Set Up the Stack Descriptor
+;
+100$:	SUBL2	#511,SP			;Move up fractional page
+	BICL2	#^X1FF,SP		;Sit stack at bottom
+	MOVL	SP,STACK_BASE		;Indicate stack bottom
+	CMPL	#STACK_HILIM,SP		;Check SP against min bound
+	BGEQ	150$			;Have to take it if already inside
+	MOVL	#STACK_HILIM,STACK_BASE	;Otherwise move down to HILIM
+	SUBL3	#STACK_HILIM,SPITGO_FREP1,R2 ;Get distance
+	ADDL2	#511,R2			;Round up to page boundary
+	ASHL	#-9,R2,R2		;Convert to page count
+	ADDL2	#4,R2			;Add in a few for debugger & such
+	BLEQ	150$			;Forget it if zero or less
+	$EXPREG_S PAGCNT=R2,REGION=#1	;Expand stack down with demand zero
+	BLBS	R0,150$			;OK if low bit set
+	PUSHL	#SPITBOL_INSVIRMEM	;Else fatal error
+	CALLS	#1,LIB$STOP		;Die
+;
+;	Merge when STACK_BASE and P1 space (but not SP) set up as best we can.
+;
+150$:	BITL	#OPT_LOD,SYSPP_OPT	;Oops - see if this is really reload
+	BEQL	200$			;Nope, go to the interpreter
+	JMP	SYSXI_RELOAD		;Otherwise we branch into reload code
+;
+;	Here if not /LOAD to go to Spitbol
+;	Clear the registers and full steam ahead.
+;
+200$:	MOVL	STACK_BASE,SP		;Set the stack pointer
+	CLRL	(SP)			;Zap (possible) junk word
+	CLRQ	R0			;Two Ends Have We With a Common Link
+	CLRQ	R2			;With One We Sit and The Other We Think
+	CLRQ	R4			;Which We Use Depends on What We Choose
+	CLRQ	R6			;Heads We Win
+	CLRQ	R8			;...Tails We Lose
+	CLRQ	R10			;Finished Clearing Registers
+;
+;	Set Registers to point at bottom/top words of dynamic
+;
+	BICL3	#3,DYNAM_END,R10	;XL gets top longword pointer
+	MOVL	DYNAM_START,R9		;XR gets base pointer
+	JMP	START$			;Out with the old & in with the new.
+	.PAGE
+	.SBTTL	SPITGO_EXCEP - HANDLE EXCEPTION TRAPS
+;
+;	This module is a exception condition handler that is
+;	entered when any trap or exception occurs not handled by the
+;	primary exception handler.  It will take care of
+;	Division by Zero, or Floating Overflow, which
+;	it does by simply returning control.  The condition codes 
+;	resulting from the trapped instruction are sufficient for Spitbol
+;	to handle the problem if it wants to.
+;
+;	In addition, this logic takes care of the /WARN /NOWARN option
+;	by ignoring any error below severe status if /NOWARN was requested.
+;
+SPITGO_EXCEP::	.WORD	^M<R2>
+	MOVL	CHF$L_SIGARGLST(AP),R0	;Get Ptr. to Signal Array
+	MOVL	CHF$L_SIG_NAME(R0),R1	;Put Signal Code in R1
+	MOVL	#SS$_CONTINUE,R0	;Assume We Will Be Able To Handle
+	BITL	#OPT_WRN,SYSPP_OPT	;See if /WARN indicated at startup
+	BNEQU	50$			;If so, go on
+	EXTZV	#0,#3,R1,R2		;Else extract severity in R2
+	CMPL	#2,R2			;See if error
+	BEQL	50$			;Yes - press on.
+	CMPL	#4,R2			;See if severe error
+	BNEQ	100$			;No - just continue from trap
+;
+;	Here when we are sure /NOWARN won't manage things
+;
+50$:	CALLG	(AP),LIB$SIM_TRAP	;Dissolve into trap in case not 11/780
+	CMPL	R1,#SS$_FLTDIV		;Floating/Decimal Divide by Zero?
+	BEQLU	100$			;If so, We Can Handle It - Branch
+	CMPL	R1,#SS$_FLTOVF		;How About Floating Overflow?
+	BEQLU	100$			;Branch if it is.
+	CMPL	R1,#SS$_INTDIV		;Integer Divide by Zero Perhaps?
+	BEQLU	100$			;Branch If So.
+;
+;	Merge When It Has Been Determined That We Have One That
+;	Is Too Hot To Handle.  Set to Resignal Condition Handler and Exit.
+;
+	MOVL	#SS$_RESIGNAL,R0	;Set to Resignal Condition Handler
+;
+;	Merge Here to Exit Back to Condition Handler
+;
+100$:	RET
+	.PAGE
+	.SBTTL	SPITGO_LASTCH - LAST CHANCE STACK OVERFLOW HANDLER
+;
+;	Last chance exception handler - for stack overflows
+;
+SPITGO_LASTCH::	.WORD	0
+	MOVL	CHF$L_SIGARGLST(AP),R0	;Get signal argument list addr
+	CMPL	#SS$_ACCVIO,CHF$L_SIG_NAME(R0) ;Has to be access violation
+	BNEQU	100$			;If not, then resignal
+	CMPL	#5,CHF$L_SIG_ARG1(R0)	;Must be P1LR violation on modify
+	BNEQU	100$			;If not, then resignal
+	TSTL	CHF$L_SIG_ARG1+4(R0)	;Check if addr in system space
+	BLEQ	100$			;If so, then resignal
+	CMPL	#^X70000000,CHF$L_SIG_ARG1+4(R0) ;Check for being in P1 space
+	BGTR	100$			;If so, then resignal
+	MOVL	STACK_BASE,SP		;Reset stack pointer
+	MOVAL	SPITGO_STKMSG,R9	;Point to stack overflow message
+	MOVL	#SPITBOL_STACKOVFL,KVCOD ;Set message in &CODE for SYSEJ
+	JMP	STOPR			;Blow it away (forget stk ovfl sec)
+;
+;	Here to resignal - this isn't a stack overflow
+;
+100$:	MOVZWL	#SS$_RESIGNAL,R0	;Set to resignal
+	RET				;Back to condition handler scan
+	.PAGE
+	.SBTTL	SET_SYSPP - SET FILE DEPENDENT OPTIONS
+;
+;	This module is entered by SPITGO  after the files have
+;	been opened (SYSIN and SYSOUT) in order to set the standard
+;	file dependent options for SYSPP and others.  It can be called
+;	by SYSBX if /OUTPUT=... or /NOOUTPUT has been specified.
+;
+;		JSB	SET_SYSPP
+;		(No Registers Modified)
+;
+SET_SYSPP::
+;
+;	Set Defaults
+;
+	$PARSE	FAB=FAB_SYSOUT		;Fill in RMS device characteristics
+	BLBS	R0,100$			;If no error then go ahead
+	MOVZBL	NAM$B_ESL+NAM_SYSOUT,-	;Else Move Filename Length to Signal
+		ERRAL_CANTOUT+12
+	MOVL	FAB$L_STS+FAB_SYSOUT,-	;...And RMS Status Code
+		ERRAL_CANTOUT+20
+	MOVL	FAB$L_STV+FAB_SYSOUT,-	;...And RMS Status Value
+		ERRAL_CANTOUT+24
+	CALLG	ERRAL_CANTOUT,LIB$STOP	;And Snuff Ourselves
+;
+;	Here when $PARSE worked to press on
+;
+100$:	CALLS	#0,LIB$LP_LINES		;Get default lines/page
+	SUBL3	#6,R0,SYSPP_LPP		;Set it (leave some room)
+	TSTL	SYSPP_PLL		;See if an explicit WIDTH given
+	BNEQ	150$			;Skip default if so
+	MOVL	#DEFPLL,SYSPP_PLL	;Assume a default width
+	BBC	#DEV$V_REC,-		;That's it if its block oriented.
+		FAB_SYSOUT+FAB$L_DEV,150$
+	MOVZBL	NAM$T_DVI+NAM_SYSOUT,-	;First byte in DVI of NAM is length
+		SPITGO_DEVDESCR
+	MOVAB	NAM$T_DVI+1+NAM_SYSOUT,- ;Following is ASCII for name
+		SPITGO_DEVDESCR+4
+	$GETDEV_S DEVNAM=SPITGO_DEVDESCR,- ;Else fill in 2ndary dev. chars.
+		SCDBUF=SPITGO_BUFDESCR
+	TSTW	DIB$W_DEVBUFSIZ+SPITGO_OUTCHAR ;Examine buffer size
+	BEQL	150$			;Skip if zero
+	CMPW	#255,DIB$W_DEVBUFSIZ+SPITGO_OUTCHAR ;Set reasonable maximum
+	BLSSU	150$			;Skip if bigger
+	MOVZWL	DIB$W_DEVBUFSIZ+SPITGO_OUTCHAR,- ;Else OK copy it in
+		SYSPP_PLL
+;
+;	Merge here when print line length set up
+;
+150$:	MOVL	#DEFOPT,SYSPP_OPT	;Set for Normal Options
+	BBC	#DEV$V_TRM,FAB_SYSOUT+FAB$L_DEV,200$  ;...Unless Terminal Out
+	XORL2	#DEFTRM,SYSPP_OPT	;In which case flip 'em.
+;
+;	Merge When Default Options Set Up.
+;
+200$:	BISL2	PARSE_YESBT,SYSPP_OPT	;Set Requested Options
+	BICL2	PARSE_NOBIT,SYSPP_OPT	;Clear Denied Options
+	RSB				;Back to SPITGO
+	.PAGE
+	.SBTTL	PARSE_OPTIONS - Establish Options For Run
+;
+;	This module is called at the start of execution to parse out
+;	the command line and merge the specified options with the
+;	defaults, and place them all away for later use.
+;
+;	The Format of the Command Line is:
+;
+;		$ SPITBOL filename/option/option...
+;
+;	All option switches are optional as is filename.  If filename
+;	(the input file) is not specified, it defaults to SYS$INPUT.
+;	The default extension for filename is .SPT .  The legal options
+;	are (default given first):
+;
+;	/CRC	/NOCRC		Enable/Disable CRC check of code on /LOAD
+;	/CSTATS	/NOCSTATS	Do not show compilation statistics
+;	/ESTATS	/NOESTATS	Controls listing of Execution Statistics
+;	/LIST[=filename]	Optional listing filename.  If no /OUTPUT=...
+;				 or /NOOUTPUT switch given, this is also
+;				 the execution output file.  If no filename
+;				 is given, then the action of this switch
+;				 is precisely the inverse of /NOLIST.
+;	/MINC=nnn		Number of pages that SYSMM adds to
+;				 dynamic when it is called.  The default
+;				 is 20 .  This can be given as zero to
+;				 prevent expansion.
+;	/MINT=nnn		Number of Pages initially given to
+;				 dynamic area.  Default is 100.
+;	/NOLIST			Do not list source code.  This implies a
+;				 /NOCSTATS and a /NOESTATS.
+;	/NOOUTPUT		Disable opening of a standard output channel
+;				 for execution output (OUTPUT = ...)
+;	/OUTPUT[=filename]	Provide an alternate output channel for
+;				 execution-time standard output channel.
+;				 If no filename given, /OUTPUT inverts the
+;				 effect of /NOOUTPUT.
+;	/PAGE	/NOPAGE		Controls whether or not a form feed
+;				 is inserted between compilation and
+;				 statistics pages as opposed to a few
+;				 blank lines.  The default is NOPAGE if
+;				 the standard print device is a terminal.
+;	/LOAD[=filename]	This switch signals that the designated
+;				 file is an EXIT(...) save file and should
+;				 be reloaded (SYSXI_RELOAD).  The default
+;				 extension is .SSV (Spitbol SaVe),
+;				 and the default name is the input name.
+;	/WARN /NOWARN		If /NOWARN is indicated, any error below
+;				 "error" severity will be continued without
+;				 a message.
+;	/WIDTH=n		Override default OUTPUT width.
+;
+;
+;	Calling Format:
+;
+;		JSB	PARSE_OPTIONS
+;		(Option Syntax Error Causes Error Message and Termination)
+;
+	.PAGE
+;
+PARSE_OPTIONS::
+;
+;	First, Handle Defaults Business
+;
+	MOVZWL	#DEFMEM,DYNAM_PAGES	;Set default memory pages
+	MOVZWL	#DEFINC,SYSMM_PGINC	;Set Memory Inc.(Pages) for SYSMM
+	CLRL	PARSE_YESBT		;No Explicit Options Yet
+	CLRL	PARSE_NOBIT		;No Explicit Denials Yet Either
+	CLRL	SYSPP_PLL		;Flag no page line length seen
+	CLRL	SPITGO_OUTLEN		;No /OUTPUT=file seen yet
+	CLRB	FAB_SYSIN+FAB$B_FNS	;No input file yet
+;
+;	Now Grab Command Line and Call TPARSE.
+;
+	PUSHAB	PARSE_GCBLK		;Request CLI to Hand Over Cmd Line
+	CALLS	#1,@#SYS$CLI		;Call Upon CLI
+	BLBC	R0,100$			;Error - Assume None - Use Defaults
+	MOVZWL	PARSE_GCBLK+CLI$Q_RQDESC,-  ;Move in Cmd. Line String Length
+		PARSE_TPBLK+TPA$L_STRINGCNT
+	MOVL	PARSE_GCBLK+CLI$Q_RQDESC+4,-  ;Move in Cmd Line String Ptr.
+		PARSE_TPBLK+TPA$L_STRINGPTR
+	PUSHAL	PO_KEY			;Set 1st Arg. as Ptr to Keywords
+	PUSHAL	PRSOP_SWCHK		;2nd Arg. is Ptr. to State Table
+	PUSHAL	PARSE_TPBLK		;Last Arg. is TPARSE Control Block
+	CALLS	#3,LIB$TPARSE		;Call Upon TPARSE to Parse Options
+	BLBS	R0,100$			;If LBS then All Clear
+	PUSHL	#SPITBOL_SYNTAX		;Else Push Error Code
+	CALLS	#1,LIB$STOP		;And Die
+;
+;	Here To Exit After Parse Complete
+;
+100$:	RSB				;Back to Spitgo
+	.PAGE
+	.SBTTL	TPARSE STATE TABLE FOR PARSE_OPTIONS
+	.SAVE_PSECT
+;
+	$INIT_STATE	PRSOP_SWCHK,PO_KEY	;Parse Options State Table...
+;
+;	Initial State - Looking For Switch.  Auto Blank Scan Is On.
+;
+	$STATE
+	$TRAN	TPA$_EOS,TPA$_EXIT		;Bye If End-Of-Command Line
+	$TRAN	<'"'>,TPA$_EXIT			;Bye if double-quote [V35-003]
+	$TRAN	'/',PRSOP_SWITCH		;Switch?
+	$TRAN	!PRSOP_FNAME,PRSOP_SWCHK,PACTN_INNAM  ;Else had best be infile
+;
+;	Process a Switch Keyword
+;
+	$STATE	PRSOP_SWITCH			;Switches Must be Alphabetical
+	$TRAN	'CRC',PRSOP_SWCHK,PACTN_BITON,,,OPT_CRC ;Enable /LOAD CRC check
+	$TRAN	'CSTATS',PRSOP_SWCHK,PACTN_BITOF,,,OPT_SCM ;Enable CompStats
+	$TRAN	'ESTATS',PRSOP_SWCHK,PACTN_BITOF,,,OPT_SEX ;Enable Ex.Stats
+	$TRAN	'EXECUTE',PRSOP_SWCHK,PACTN_BITOF,,,OPT_NEX ;Enable Execution
+	$TRAN	'LIST',PRSOP_LISFN		;Set Listing
+	$TRAN	'LOAD',PRSOP_LODFN,PACTN_BITON,,,OPT_LOD ;Set Load module
+	$TRAN	'MINC',PRSOP_MINCS		;Process MINC Value
+	$TRAN	'MINT',PRSOP_MINTS		;Process MINT Value
+	$TRAN	'NOCRC',PRSOP_SWCHK,PACTN_BITOF,,,OPT_CRC ;Disable /LOAD CRC ck
+	$TRAN	'NOCSTATS',PRSOP_SWCHK,PACTN_BITON,,,OPT_SCM  ;Disab. CStats
+	$TRAN	'NOESTATS',PRSOP_SWCHK,PACTN_BITON,,,OPT_SEX  ;Disable Estats
+	$TRAN	'NOEXECUTE',PRSOP_SWCHK,PACTN_BITON,,,OPT_NEX ;Disable Exec'tn
+	$TRAN	'NOLIST',PRSOP_SWCHK,PACTN_BITON,,,-
+			<OPT_NLS!OPT_SEX!OPT_SCM> ;Disable Listing
+	$TRAN	'NOOUTPUT',PRSOP_SWCHK,PACTN_NOOUT ;Disable exec. out
+	$TRAN	'NOPAGE',PRSOP_SWCHK,PACTN_BITOF,,,OPT_EXT ;Disable FFs
+	$TRAN	'NOWARN',PRSOP_SWCHK,PACTN_BITOF,,,OPT_WRN ;Nowarn switch
+	$TRAN	'OUTPUT',PRSOP_OUTFN		;Set Listing Filename
+	$TRAN	'PAGE',PRSOP_SWCHK,PACTN_BITON,,,OPT_EXT ;Enable FormFeeds
+	$TRAN	'WARN',PRSOP_SWCHK,PACTN_BITON,,,OPT_WRN ;Warning switch
+	$TRAN	'WIDTH',PRSOP_WIDTH
+	.PAGE
+;
+;	Scan Out Filename.  The filename is taken to be everything up to
+;	the next blank, tab, switch, double-quote or end-of-string.
+;	For this purpose, after this state is entered, Tparse's Blank
+;	Scanning is switched off to avoid getting trailing blanks
+;	into the filename.
+;
+	$STATE	PRSOP_FNAME
+	$TRAN	TPA$_EOS,TPA$_EXIT		;Done If Nothing More
+	$TRAN	TPA$_ANY,PRSOP_FNAME,PACTN_NOTSW  ;Accept all but delimiter.
+	$TRAN	TPA$_LAMBDA,TPA$_EXIT		;Else Done - Exit.
+;
+;	Looking For Optional Listing Filename
+;
+	$STATE	PRSOP_LISFN
+	$TRAN	'='
+	$TRAN	':'
+	$TRAN	TPA$_LAMBDA,PRSOP_SWCHK,PACTN_BITOF,,,<OPT_NLS!OPT_SEX!OPT_SCM>
+	$STATE
+	$TRAN	!PRSOP_FNAME,PRSOP_SWCHK,PACTN_LISNM	;Get Listing File
+;
+;	Looking For Optional Load Module Filename
+;
+	$STATE	PRSOP_LODFN
+	$TRAN	'='
+	$TRAN	':'
+	$TRAN	TPA$_LAMBDA,PRSOP_SWCHK
+	$STATE
+	$TRAN	!PRSOP_FNAME,PRSOP_SWCHK,PACTN_LODNM	;Get File
+;
+;	Process MINC=n Keyword
+;
+	$STATE	PRSOP_MINCS			;MINC Switch
+	$TRAN	'='
+	$TRAN	':'
+	$STATE					;Looking for Value
+	$TRAN	TPA$_DECIMAL,PRSOP_SWCHK,PACTN_STORE,,,SYSMM_PGINC
+	.PAGE
+;
+;	Process MINT=n Keyword
+;
+	$STATE	PRSOP_MINTS			;Handle MINT Switch
+	$TRAN	'='
+	$TRAN	':'
+	$STATE					;Looking For Value
+	$TRAN	TPA$_DECIMAL,PRSOP_SWCHK,PACTN_STORE,,,DYNAM_PAGES
+;
+;	Looking For Optional /OUTPUT=... Filename
+;
+	$STATE	PRSOP_OUTFN
+	$TRAN	'='
+	$TRAN	':'
+	$TRAN	TPA$_LAMBDA,PRSOP_SWCHK,PACTN_OUTPT	;No special output file
+	$STATE
+	$TRAN	!PRSOP_FNAME,PRSOP_SWCHK,PACTN_OUTNM	;Get Listing File
+;
+;	Process WIDTH=n Keyword
+;
+	$STATE	PRSOP_WIDTH
+	$TRAN	':'
+	$TRAN	'='
+	$STATE
+	$TRAN	TPA$_DECIMAL,PRSOP_SWCHK,PACTN_STORE,,,SYSPP_PLL
+;
+;	End Of State Table
+;
+	$END_STATE
+	.RESTORE_PSECT
+	.PAGE
+	.SBTTL	TPARSE ACTION ROUTINES
+;
+;	All these Action Routines are entered with AP pointing to the
+;	TPARSE Parameter Block.  R0 can be used to signal Success/Failure
+;	of the transition in standard VAX fashion.  R0 comes in as 1 (success).
+;
+;
+;	Turn on options bits
+;
+PACTN_BITON::.WORD	0
+	BISL2	TPA$L_PARAM(AP),PARSE_YESBT	;Requested...
+	BICL2	TPA$L_PARAM(AP),PARSE_NOBIT	;...Not Denied
+	RET
+;
+;	Turn off options bits
+;
+PACTN_BITOF::.WORD	0
+	BISL2	TPA$L_PARAM(AP),PARSE_NOBIT	;Denied,...
+	BICL2	TPA$L_PARAM(AP),PARSE_YESBT	;...Not Requested
+	RET
+;
+;	Process Input Filename
+;
+PACTN_INNAM::.WORD	0		;Process Input Filename
+	TSTL	TPA$L_TOKENCNT(AP)	;Check Length Of Name Scanned
+	BEQLU	100$			;If Zero, Skip It.
+	CLRL	R0			;Assume the worst
+	TSTB	FAB_SYSIN+FAB$B_FNS	;Check for name already seen
+	BNEQ	100$			;Error if length is non-zero
+	MOVZBL	#1,R0			;Phew!
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>	;Save All Volatile Registers
+	MOVC5	TPA$L_TOKENCNT(AP),-	;Copy Chars To SYSIN FCBLK
+		@TPA$L_TOKENPTR(AP),#0,#NAM$C_MAXRSS,FNM_SYSIN
+	POPR	#^M<R0,R1,R2,R3,R4,R5>	;Restore Regs
+	MOVB	TPA$L_TOKENCNT(AP),FAB_SYSIN+FAB$B_FNS  ;Set Size
+;
+;	Merge Here to Re-Enable Automatic Blank Scanning By TPARSE
+;
+100$:	BICL2	#TPA$M_BLANKS,TPA$L_OPTIONS(AP)
+	RET				;Exit Back to Tparse
+;
+;	Process Explicit Filename Spec for /LIST=...
+;
+PACTN_LISNM::.WORD	0
+	TSTL	TPA$L_TOKENCNT(AP)	;Check Length of Name String
+	BEQL	100$			;Error If Zero
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>	;Save 'Em All
+	MOVC5	TPA$L_TOKENCNT(AP),-	;Move In Filename String To SYSOUT FCBLK
+		@TPA$L_TOKENPTR(AP),#0,#NAM$C_MAXRSS,FNM_SYSOUT
+	POPR	#^M<R0,R1,R2,R3,R4,R5>	;Restore 'Em All
+	MOVB	TPA$L_TOKENCNT(AP),FAB_SYSOUT+FAB$B_FNS ;Set length
+	MOVL	#1,R0			;Signal Success
+	BRB	200$			;Go to Exit
+;
+;	Here If Error In Name Scanned (Zero Length)
+;
+100$:	CLRL	R0			;Signal Failure
+;
+;	Merge Here to Exit
+;
+200$:	BICL2	#TPA$M_BLANKS,TPA$L_OPTIONS(AP) ;Re-enable Autoblanks
+	RET
+;
+;	Process Explicit LOAD Filename Spec
+;
+PACTN_LODNM::.WORD	0
+	TSTL	TPA$L_TOKENCNT(AP)	;Check Length of Name String
+	BEQL	100$			;Error If Zero
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>	;Save 'Em All
+	MOVC5	TPA$L_TOKENCNT(AP),-	;Move In Name String To SYSXI FCBLK
+		@TPA$L_TOKENPTR(AP),#0,#NAM$C_MAXRSS,SYSXI_EXFNM
+	POPR	#^M<R0,R1,R2,R3,R4,R5>	;Restore 'Em All
+	MOVB	TPA$L_TOKENCNT(AP),SYSXI_EXFAB+FAB$B_FNS   ;Set Size
+	MOVL	#1,R0			;Signal Success
+	BRB	200$			;Go to Exit
+;
+;	Here If Error In Name Scanned (Zero Length)
+;
+100$:	CLRL	R0			;Signal Failure
+;
+;	Merge Here to Exit
+;
+200$:	BICL2	#TPA$M_BLANKS,TPA$L_OPTIONS(AP) ;Re-enable Autoblanks
+	RET
+;
+;	Process a /NOOUTPUT qualifier.  Just set the output filename
+;	to be NL:
+;
+PACTN_NOOUT::.WORD	0
+	MOVL	#^A/NL: /,SPITGO_OUTNAM	;Set name (NL:)
+	MOVL	#3,SPITGO_OUTLEN	;Set length of name
+	RET				;Return to caller
+;
+;	This checks a character (TPA$_ANY) transition, and only
+;	succeeds if the character is not a filename terminator
+;	("/",double-quote, blank or tab).
+;
+PACTN_NOTSW::.WORD	0
+	BISL2	#TPA$M_BLANKS,TPA$L_OPTIONS(AP)	;Be Sure Auto-Blanks is Off
+	CMPB	#^A"/",TPA$L_CHAR(AP)	;Is this a switch ?
+	BNEQU	100$			;No - Check For Blank
+	CLRL	R0			;If so, Signal Failure
+	BRB	200$			;And Exit
+;
+;	Here to Test for Blank
+;
+100$:	CMPB	#^A" ",TPA$L_CHAR(AP)	;Is it a Blank?
+	BNEQU	150$			;No - Check for Double-Quote.
+	CLRL	R0			;Else Signal Failure
+	BRB	200$			;Merge To Exit.
+;
+;	Here To Check For Double-quote
+;
+150$:	CMPB	#^A'"',TPA$L_CHAR(AP)	;Is it a Double-quote?
+	BNEQU	175$			;No - Check for Tab.
+	CLRL	R0			;Else Signal Failure
+	BRB	200$			;Merge To Exit.
+;
+;	Check for tab
+;
+175$:	CMPB	#^A"	",TPA$L_CHAR(AP) ;Is it a Tab?
+	BNEQU	200$			;No - Merge to Exit with Success
+	CLRL	R0			;Else Signal Failure and Merge
+;
+;	Merge to Exit with R0 Set to Success/Failure
+;
+200$:	RET				;Back to TPARSE
+;
+;	Process Explicit Filename Spec for /OUTPUT=...
+;
+PACTN_OUTNM::.WORD	0
+	TSTL	TPA$L_TOKENCNT(AP)	;Check Length of Name String
+	BEQL	100$			;Error If Zero
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>	;Save 'Em All
+	MOVC5	TPA$L_TOKENCNT(AP),-	;Move In Filename String To SYSOUT FCBLK
+		@TPA$L_TOKENPTR(AP),#0,#NAM$C_MAXRSS,SPITGO_OUTNAM
+	POPR	#^M<R0,R1,R2,R3,R4,R5>	;Restore 'Em All
+	MOVB	TPA$L_TOKENCNT(AP),SPITGO_OUTLEN ;Set length
+	MOVL	#1,R0			;Signal Success
+	BRB	200$			;Go to Exit
+;
+;	Here If Error In Name Scanned (Zero Length)
+;
+100$:	CLRL	R0			;Signal Failure
+;
+;	Merge Here to Exit
+;
+200$:	BICL2	#TPA$M_BLANKS,TPA$L_OPTIONS(AP) ;Re-enable Autoblanks
+	RET
+;
+;	Process /OUTPUT with no filename.  This just clears the
+;	length for the output filename.
+;
+PACTN_OUTPT::.WORD	0
+	CLRL	SPITGO_OUTLEN		;Zero the length
+	RET				;Back to Tparse
+;
+;	Store Switch Value In Longword Indicated by Parameter
+;
+PACTN_STORE::.WORD	0
+	MOVL	TPA$L_NUMBER(AP),@TPA$L_PARAM(AP)  ;Store Decimal Value
+	RET				;Back To Tparse.
+	.END	SPITGO
